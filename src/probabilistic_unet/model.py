@@ -11,7 +11,7 @@ class Encoder(nn.Module):
     A convolutional neural network, consisting of len(num_filters) times a block of no_convs_per_block convolutional layers,
     after each block a pooling operation is performed. And after each convolutional layer a non-linear (ReLU) activation function is applied.
     """
-    def __init__(self, input_channels, num_filters, no_convs_per_block, initializers, padding=True, posterior=False):
+    def __init__(self, input_channels, label_channels, num_filters, no_convs_per_block, initializers, padding=True, posterior=False):
         super(Encoder, self).__init__()
         self.contracting_path = nn.ModuleList()
         self.input_channels = input_channels
@@ -19,7 +19,7 @@ class Encoder(nn.Module):
 
         if posterior:
             #To accomodate for the mask that is concatenated at the channel axis, we increase the input_channels.
-            self.input_channels += 1
+            self.input_channels += label_channels
 
         layers = []
         for i in range(len(self.num_filters)):
@@ -52,7 +52,7 @@ class AxisAlignedConvGaussian(nn.Module):
     """
     A convolutional net that parametrizes a Gaussian distribution with axis aligned covariance matrix.
     """
-    def __init__(self, input_channels, num_filters, no_convs_per_block, latent_dim, initializers, posterior=False):
+    def __init__(self, input_channels, label_channels, num_filters, no_convs_per_block, latent_dim, initializers, posterior=False):
         super(AxisAlignedConvGaussian, self).__init__()
         self.input_channels = input_channels
         self.channel_axis = 1
@@ -64,7 +64,8 @@ class AxisAlignedConvGaussian(nn.Module):
             self.name = 'Posterior'
         else:
             self.name = 'Prior'
-        self.encoder = Encoder(self.input_channels, self.num_filters, self.no_convs_per_block, initializers, posterior=self.posterior)
+
+        self.encoder = Encoder(self.input_channels, label_channels, self.num_filters, self.no_convs_per_block, initializers, posterior=self.posterior)
         self.conv_layer = nn.Conv2d(num_filters[-1], 2 * self.latent_dim, (1,1), stride=1)
         self.show_img = 0
         self.show_seg = 0
@@ -83,6 +84,9 @@ class AxisAlignedConvGaussian(nn.Module):
             self.show_seg = segm
             if one_hot is True:
                 input = torch.cat((input, segm[:, :, 1, ...]), dim=1)
+            else:
+                input = torch.cat((input, segm), dim=1)
+
             self.show_concat = input
             self.sum_input = torch.sum(input)
 
@@ -188,7 +192,7 @@ class ProbabilisticUnet(nn.Module):
     no_cons_per_block: no convs per block in the (convolutional) encoder of prior and posterior
     """
 
-    def __init__(self, input_channels=1, num_classes=1, num_filters=[32,64,128,192], latent_dim=6, no_convs_fcomb=4, beta=10.0):
+    def __init__(self, input_channels=1, label_channels=1, num_classes=1, num_filters=[32,64,128,192], latent_dim=6, no_convs_fcomb=4, beta=10.0):
         super(ProbabilisticUnet, self).__init__()
         self.input_channels = input_channels
         self.num_classes = num_classes
@@ -203,9 +207,9 @@ class ProbabilisticUnet(nn.Module):
         # Main U-Net
         self.unet = Unet(self.input_channels, self.num_classes, self.num_filters, self.initializers, apply_last_layer=False, padding=True)
         # Prior Net
-        self.prior = AxisAlignedConvGaussian(self.input_channels, self.num_filters, self.no_convs_per_block, self.latent_dim,  self.initializers,)
+        self.prior = AxisAlignedConvGaussian(self.input_channels, label_channels, self.num_filters, self.no_convs_per_block, self.latent_dim,  self.initializers,)
         # Posterior Net
-        self.posterior = AxisAlignedConvGaussian(self.input_channels, self.num_filters, self.no_convs_per_block, self.latent_dim, self.initializers, posterior=True)
+        self.posterior = AxisAlignedConvGaussian(self.input_channels, label_channels, self.num_filters, self.no_convs_per_block, self.latent_dim, self.initializers, posterior=True)
         # 1x1 convolutions to merge samples from the posterior into the decoder output
         self.fcomb = Fcomb(self.num_filters, self.latent_dim, self.input_channels, self.num_classes, self.no_convs_fcomb, {'w':'orthogonal', 'b':'normal'}, use_tile=True)
 
@@ -315,17 +319,19 @@ class ProbabilisticUnet(nn.Module):
                     reconstruction_loss += criterion(input=reconstruction,
                                                      target=torch.argmax(segm[:, anno, task, ...], dim=1))
                 else:
-                    reconstruction_loss += criterion(input=reconstruction,
+                    reconstruction_loss += criterion(input=reconstruction[:, task, ...],
                                                      target=segm[:, anno, task, ...])
 
 
         reconstruction_loss = reconstruction_loss/(n_annotations*n_tasks)
         kl_loss = kl_loss/n_annotations
 
+
         loss_dict = {}
         loss_dict['loss'] = (reconstruction_loss + self.beta*kl_loss)
         loss_dict['reconstruction'] = reconstruction_loss
         loss_dict['kl'] = kl_loss
+
 
         return loss_dict
 

@@ -9,7 +9,7 @@ class DownConvBlock(nn.Module):
     A block of three convolutional layers where each layer is followed by a non-linear activation function
     Between each block we add a pooling operation.
     """
-    def __init__(self, input_dim, output_dim, initializers, padding, pool=True, dropout=False):
+    def __init__(self, input_dim, output_dim, initializers, padding, pool=True, dropout=False, dropout_rate=0.5):
         super(DownConvBlock, self).__init__()
         layers = []
 
@@ -19,17 +19,17 @@ class DownConvBlock(nn.Module):
         layers.append(nn.Conv2d(input_dim, output_dim, kernel_size=3, stride=1, padding=int(padding)))
         layers.append(nn.ReLU(inplace=True))
         if dropout is True:
-            layers.append(nn.Dropout(p=0.5))
+            layers.append(nn.Dropout(p=dropout_rate))
 
         layers.append(nn.Conv2d(output_dim, output_dim, kernel_size=3, stride=1, padding=int(padding)))
         layers.append(nn.ReLU(inplace=True))
         if dropout is True:
-            layers.append(nn.Dropout(p=0.5))
+            layers.append(nn.Dropout(p=dropout_rate))
 
         layers.append(nn.Conv2d(output_dim, output_dim, kernel_size=3, stride=1, padding=int(padding)))
         layers.append(nn.ReLU(inplace=True))
         if dropout is True:
-            layers.append(nn.Dropout(p=0.5))
+            layers.append(nn.Dropout(p=dropout_rate))
 
         self.layers = nn.Sequential(*layers)
 
@@ -53,7 +53,7 @@ class UpConvBlock(nn.Module):
     A block consists of an upsampling layer followed by a convolutional layer to reduce the amount of channels and then a DownConvBlock
     If bilinear is set to false, we do a transposed convolution instead of upsampling
     """
-    def __init__(self, input_dim, output_dim, initializers, padding, bilinear=True, dropout=False):
+    def __init__(self, input_dim, output_dim, initializers, padding, bilinear=True, dropout=False, dropout_rate=0.5):
         super(UpConvBlock, self).__init__()
         self.bilinear = bilinear
 
@@ -61,7 +61,7 @@ class UpConvBlock(nn.Module):
             self.upconv_layer = nn.ConvTranspose2d(input_dim, output_dim, kernel_size=2, stride=2)
             self.upconv_layer.apply(init_weights)
 
-        self.conv_block = DownConvBlock(input_dim, output_dim, initializers, padding, pool=False, dropout=dropout)
+        self.conv_block = DownConvBlock(input_dim, output_dim, initializers, padding, pool=False, dropout=dropout, dropout_rate=dropout_rate)
 
     def forward(self, x, bridge):
         if self.bilinear:

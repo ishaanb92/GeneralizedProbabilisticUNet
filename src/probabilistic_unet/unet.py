@@ -11,7 +11,7 @@ class Unet(nn.Module):
     padidng: Boolean, if true we pad the images with 1 so that we keep the same dimensions
     """
 
-    def __init__(self, input_channels, num_classes, num_filters, initializers, apply_last_layer=True, padding=True, mc_dropout=False):
+    def __init__(self, input_channels, num_classes, num_filters, initializers, apply_last_layer=True, padding=True, mc_dropout=False, dropout_rate=0.5):
         super(Unet, self).__init__()
         self.input_channels = input_channels
         self.num_classes = num_classes
@@ -31,7 +31,7 @@ class Unet(nn.Module):
                 pool = True
 
             if mc_dropout is True and i == len(self.num_filters) - 1:
-                self.contracting_path.append(DownConvBlock(input, output, initializers, padding, pool=pool, dropout=True))
+                self.contracting_path.append(DownConvBlock(input, output, initializers, padding, pool=pool, dropout=True, dropout_rate=dropout_rate))
             else:
                 self.contracting_path.append(DownConvBlock(input, output, initializers, padding, pool=pool, dropout=False))
 
@@ -43,7 +43,7 @@ class Unet(nn.Module):
             input = output + self.num_filters[i]
             output = self.num_filters[i]
             if mc_dropout is True and i == n:
-                self.upsampling_path.append(UpConvBlock(input, output, initializers, padding, dropout=True))
+                self.upsampling_path.append(UpConvBlock(input, output, initializers, padding, dropout=True, dropout_rate=dropout_rate))
             else:
                 self.upsampling_path.append(UpConvBlock(input, output, initializers, padding, dropout=False))
 

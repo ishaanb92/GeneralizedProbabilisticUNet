@@ -9,7 +9,7 @@ class DownConvBlock(nn.Module):
     A block of three convolutional layers where each layer is followed by a non-linear activation function
     Between each block we add a pooling operation.
     """
-    def __init__(self, input_dim, output_dim, initializers, padding, pool=True):
+    def __init__(self, input_dim, output_dim, initializers, padding, pool=True, dropout=False):
         super(DownConvBlock, self).__init__()
         layers = []
 
@@ -18,14 +18,31 @@ class DownConvBlock(nn.Module):
 
         layers.append(nn.Conv2d(input_dim, output_dim, kernel_size=3, stride=1, padding=int(padding)))
         layers.append(nn.ReLU(inplace=True))
+        if dropout is True:
+            layers.append(nn.Dropout(p=0.5))
+
         layers.append(nn.Conv2d(output_dim, output_dim, kernel_size=3, stride=1, padding=int(padding)))
         layers.append(nn.ReLU(inplace=True))
+        if dropout is True:
+            layers.append(nn.Dropout(p=0.5))
+
         layers.append(nn.Conv2d(output_dim, output_dim, kernel_size=3, stride=1, padding=int(padding)))
         layers.append(nn.ReLU(inplace=True))
+        if dropout is True:
+            layers.append(nn.Dropout(p=0.5))
 
         self.layers = nn.Sequential(*layers)
 
         self.layers.apply(init_weights)
+
+    # Return weights to be used later in L2-regularization of MC-Dropout layers
+    def get_conv_weights(self):
+        weights = []
+        for m in self.layers:
+            if type(m) == nn.Conv2d:
+                weights.append(m.weight)
+
+        return weights
 
     def forward(self, patch):
         return self.layers(patch)
@@ -36,7 +53,7 @@ class UpConvBlock(nn.Module):
     A block consists of an upsampling layer followed by a convolutional layer to reduce the amount of channels and then a DownConvBlock
     If bilinear is set to false, we do a transposed convolution instead of upsampling
     """
-    def __init__(self, input_dim, output_dim, initializers, padding, bilinear=True):
+    def __init__(self, input_dim, output_dim, initializers, padding, bilinear=True, dropout=False):
         super(UpConvBlock, self).__init__()
         self.bilinear = bilinear
 
@@ -44,7 +61,7 @@ class UpConvBlock(nn.Module):
             self.upconv_layer = nn.ConvTranspose2d(input_dim, output_dim, kernel_size=2, stride=2)
             self.upconv_layer.apply(init_weights)
 
-        self.conv_block = DownConvBlock(input_dim, output_dim, initializers, padding, pool=False)
+        self.conv_block = DownConvBlock(input_dim, output_dim, initializers, padding, pool=False, dropout=dropout)
 
     def forward(self, x, bridge):
         if self.bilinear:
@@ -57,3 +74,7 @@ class UpConvBlock(nn.Module):
         out =  self.conv_block(out)
 
         return out
+
+    def get_conv_weights(self):
+        return self.conv_block.get_conv_weights()
+

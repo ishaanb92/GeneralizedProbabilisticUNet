@@ -192,7 +192,7 @@ class ProbabilisticUnet(nn.Module):
     no_cons_per_block: no convs per block in the (convolutional) encoder of prior and posterior
     """
 
-    def __init__(self, input_channels=1, label_channels=1, num_classes=1, num_filters=[32,64,128,192], latent_dim=6, no_convs_fcomb=4, beta=10.0):
+    def __init__(self, input_channels=1, label_channels=1, num_classes=1, num_filters=[32,64,128,192], latent_dim=6, no_convs_fcomb=4, beta=10.0, mc_dropout=False):
         super(ProbabilisticUnet, self).__init__()
         self.input_channels = input_channels
         self.num_classes = num_classes
@@ -203,9 +203,10 @@ class ProbabilisticUnet(nn.Module):
         self.initializers = {'w':'he_normal', 'b':'normal'}
         self.beta = beta
         self.z_prior_sample = 0
+        self.mc_dropout = mc_dropout
 
         # Main U-Net
-        self.unet = Unet(self.input_channels, self.num_classes, self.num_filters, self.initializers, apply_last_layer=False, padding=True)
+        self.unet = Unet(self.input_channels, self.num_classes, self.num_filters, self.initializers, apply_last_layer=False, padding=True, mc_dropout=mc_dropout)
         # Prior Net
         self.prior = AxisAlignedConvGaussian(self.input_channels, label_channels, self.num_filters, self.no_convs_per_block, self.latent_dim,  self.initializers,)
         # Posterior Net
@@ -222,6 +223,8 @@ class ProbabilisticUnet(nn.Module):
             self.posterior_latent_space = self.posterior.forward(patch, segm, one_hot=one_hot)
         self.prior_latent_space = self.prior.forward(patch)
         self.unet_features = self.unet.forward(patch,False)
+        self.l2_weights = self.unet.get_l2_weights()
+
 
     def sample(self, testing=False):
         """
@@ -328,6 +331,14 @@ class ProbabilisticUnet(nn.Module):
 
         loss_dict = {}
         loss_dict['loss'] = (reconstruction_loss + self.beta*kl_loss)
+
+        if self.mc_dropout is True:
+            l2_reg = 0
+            for weight_tensor in self.l2_weights:
+                l2_reg += weight_tensor.norm(2)
+
+            loss_dict['loss'] = loss_dict['loss'] + 5e-5*l2_reg
+
         loss_dict['reconstruction'] = reconstruction_loss
         loss_dict['kl'] = kl_loss
 

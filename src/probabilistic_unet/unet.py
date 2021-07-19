@@ -11,7 +11,7 @@ class Unet(nn.Module):
     padidng: Boolean, if true we pad the images with 1 so that we keep the same dimensions
     """
 
-    def __init__(self, input_channels, num_classes, num_filters, initializers, apply_last_layer=True, padding=True):
+    def __init__(self, input_channels, num_classes, num_filters, initializers, apply_last_layer=True, padding=True, mc_dropout=False):
         super(Unet, self).__init__()
         self.input_channels = input_channels
         self.num_classes = num_classes
@@ -30,7 +30,11 @@ class Unet(nn.Module):
             else:
                 pool = True
 
-            self.contracting_path.append(DownConvBlock(input, output, initializers, padding, pool=pool))
+            if mc_dropout is True and i == len(self.num_filters) - 1:
+                self.contracting_path.append(DownConvBlock(input, output, initializers, padding, pool=pool, dropout=True))
+            else:
+                self.contracting_path.append(DownConvBlock(input, output, initializers, padding, pool=pool, dropout=False))
+
 
         self.upsampling_path = nn.ModuleList()
 
@@ -38,7 +42,10 @@ class Unet(nn.Module):
         for i in range(n, -1, -1):
             input = output + self.num_filters[i]
             output = self.num_filters[i]
-            self.upsampling_path.append(UpConvBlock(input, output, initializers, padding))
+            if mc_dropout is True and i == n:
+                self.upsampling_path.append(UpConvBlock(input, output, initializers, padding, dropout=True))
+            else:
+                self.upsampling_path.append(UpConvBlock(input, output, initializers, padding, dropout=False))
 
         if self.apply_last_layer:
             self.last_layer = nn.Conv2d(output, num_classes, kernel_size=1)
@@ -66,3 +73,12 @@ class Unet(nn.Module):
             x =  self.last_layer(x)
 
         return x
+
+    def get_l2_weights(self):
+        # Get conv weights for encoder/decoder where dropout is applied
+        encoder_weights = self.contracting_path[len(self.num_filters)-1].get_conv_weights()
+        decoder_weights = self.upsampling_path[0].get_conv_weights()
+
+        return encoder_weights+decoder_weights
+
+

@@ -82,6 +82,7 @@ class AxisAlignedConvGaussian(nn.Module):
         if segm is not None:
             self.show_img = input
             self.show_seg = segm
+
             if one_hot is True:
                 input = torch.cat((input, segm[:, :, 1, ...]), dim=1)
             else:
@@ -275,7 +276,7 @@ class ProbabilisticUnet(nn.Module):
             kl_div = log_posterior_prob - log_prior_prob
         return kl_div
 
-    def compute_loss(self, segm, train=True):
+    def compute_loss(self, segm, train=True, class_weight=None):
         """
         Calculate the evidence lower bound of the log-likelihood of P(Y|X)
         """
@@ -285,7 +286,7 @@ class ProbabilisticUnet(nn.Module):
         n_annotations = segm.shape[1]
 
         if n_tasks == 1: # Squeeze the labels
-            criterion = nn.CrossEntropyLoss() # Softmax + NLL
+            criterion = nn.CrossEntropyLoss(weight=class_weight) # Softmax + NLL
         else:
             criterion = nn.BCEWithLogitsLoss() # Sigmoid + BCE (per-task)
 

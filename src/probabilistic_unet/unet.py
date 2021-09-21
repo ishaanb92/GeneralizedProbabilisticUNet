@@ -30,7 +30,8 @@ class Unet(nn.Module):
             else:
                 pool = True
 
-            if mc_dropout is True and i == len(self.num_filters) - 1:
+            # Bottom-most encoding layer is #filters-2, #filters-1 is the bottleneck!
+            if mc_dropout is True and i == len(self.num_filters) - 2:
                 self.contracting_path.append(DownConvBlock(input, output, initializers, padding, pool=pool, dropout=True, dropout_rate=dropout_rate))
             else:
                 self.contracting_path.append(DownConvBlock(input, output, initializers, padding, pool=pool, dropout=False))

@@ -75,10 +75,10 @@ class Unet(nn.Module):
 
         return x
 
-    def get_l2_weights(self):
+    def get_l2_params(self):
         # Get conv weights for encoder/decoder where dropout is applied
-        encoder_weights = self.contracting_path[len(self.num_filters)-1].get_conv_weights()
-        decoder_weights = self.upsampling_path[0].get_conv_weights()
+        encoder_weights = self.contracting_path[len(self.num_filters)-1].get_conv_params()
+        decoder_weights = self.upsampling_path[0].get_conv_params()
 
         return encoder_weights+decoder_weights
 

@@ -25,28 +25,29 @@ class DownConvBlock(nn.Module):
         layers.append(nn.ReLU(inplace=True))
 
         layers.append(nn.Conv2d(output_dim, output_dim, kernel_size=3, stride=1, padding=int(padding)))
-        layers.append(nn.ReLU(inplace=True))
         if dropout is True:
             layers.append(nn.Dropout(p=dropout_rate))
+        layers.append(nn.ReLU(inplace=True))
 
         self.layers = nn.Sequential(*layers)
 
         self.layers.apply(init_weights)
 
-    # Return weights to be used later in L2-regularization of MC-Dropout layers
-    def get_conv_weights(self):
-        weights = []
+    # Return weights and biases to be used later in L2-regularization of MC-Dropout layers
+    def get_conv_params(self):
+        params = []
 
         # Since dropout is performed only at encoder output, add only the weights of the last convolution
         for m in reversed(self.layers):
             if type(m) == nn.Conv2d:
-                weights.append(m.weight)
+                params.append(m.weight)
+                params.append(m.bias)
                 break
 
         if self.dropout is True:
-            assert(len(weights) == 1)
+            assert(len(params) == 2)
 
-        return weights
+        return params
 
 
     def forward(self, patch):
@@ -80,6 +81,6 @@ class UpConvBlock(nn.Module):
 
         return out
 
-    def get_conv_weights(self):
-        return self.conv_block.get_conv_weights()
+    def get_conv_params(self):
+        return self.conv_block.get_conv_params()
 

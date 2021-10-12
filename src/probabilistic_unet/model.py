@@ -224,7 +224,7 @@ class ProbabilisticUnet(nn.Module):
             self.posterior_latent_space = self.posterior.forward(patch, segm, one_hot=one_hot)
         self.prior_latent_space = self.prior.forward(patch)
         self.unet_features = self.unet.forward(patch,False)
-        self.l2_weights = self.unet.get_l2_weights()
+        self.l2_params = self.unet.get_l2_params()
 
 
     def sample(self, testing=False):
@@ -335,8 +335,8 @@ class ProbabilisticUnet(nn.Module):
 
         if self.mc_dropout is True:
             l2_reg = 0
-            for weight_tensor in self.l2_weights:
-                l2_reg += weight_tensor.norm(2)
+            for param_tensor in self.l2_params:
+                l2_reg += param_tensor.norm(2)
 
             loss_dict['loss'] = loss_dict['loss'] + 5e-5*l2_reg
 

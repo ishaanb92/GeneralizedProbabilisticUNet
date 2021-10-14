@@ -462,16 +462,6 @@ class ProbabilisticUnet(nn.Module):
         loss_dict = {}
         loss_dict['loss'] = (reconstruction_loss + self.beta*kl_loss)
 
-        # FIXME: REMOVE THIS!!!
-        # L2 regularization should applied to ALL weights, not just the
-        # ones with dropout!
-        if self.mc_dropout is True:
-            l2_reg = 0
-            for param_tensor in self.l2_params:
-                l2_reg += param_tensor.norm(2)
-
-            loss_dict['loss'] = loss_dict['loss'] + 5e-5*l2_reg
-
         loss_dict['reconstruction'] = reconstruction_loss
         loss_dict['kl'] = kl_loss
 

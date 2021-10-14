@@ -5,6 +5,8 @@ The code in this repository was developed for the [QUBIQ 2021 challenge](https:/
 
 The code for the Probabilistic U-Net has been forked from [here](https://github.com/stefanknegt/Probabilistic-Unet-Pytorch). We have restructured the code to enable import as an external module, in addition to changes to handle multi-channel images and uncertainty estimation using MC-Dropout. 
 
+UPDATE: Supports low-rank approximation for prior and posterior covariance matrices to capture more expressive distributions. See [Monteiro et al. (2020)](https://arxiv.org/abs/2006.06015) for background on low-rank approximation of covariance matrices of multivariate Gaussian distributions.  
+
 ### Usage:
 
 Follow these steps to use this model in your project:

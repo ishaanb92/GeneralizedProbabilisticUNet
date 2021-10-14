@@ -4,7 +4,7 @@ from .unet_blocks import *
 from .unet import Unet
 from .utils import init_weights,init_weights_orthogonal_normal, l2_regularisation
 import torch.nn.functional as F
-from torch.distributions import Normal, Independent, kl
+from torch.distributions import Normal, Independent, kl, LowRankMultivariateNormal
 
 class Encoder(nn.Module):
     """
@@ -114,6 +114,92 @@ class AxisAlignedConvGaussian(nn.Module):
         dist = Independent(Normal(loc=mu, scale=torch.exp(log_sigma)),1)
         return dist
 
+class LowRankCovConvGaussian(nn.Module):
+    """
+    A convolutional net that parametrizes a Gaussian distribution with low-rank approximation of covariance matrix.
+    """
+    def __init__(self, input_channels, label_channels, num_filters, no_convs_per_block, latent_dim, initializers, posterior=False, rank=10):
+        super(LowRankCovConvGaussian, self).__init__()
+        self.input_channels = input_channels
+        self.channel_axis = 1
+        self.num_filters = num_filters
+        self.no_convs_per_block = no_convs_per_block
+        self.latent_dim = latent_dim
+        self.posterior = posterior
+        self.rank = rank
+
+        if self.posterior:
+            self.name = 'Posterior'
+        else:
+            self.name = 'Prior'
+
+        self.encoder = Encoder(self.input_channels, label_channels, self.num_filters, self.no_convs_per_block, initializers, posterior=self.posterior)
+
+        self.mean_op = nn.Conv2d(num_filters[-1], self.latent_dim, (1, 1), stride=1)
+        self.log_cov_diag_op = nn.Conv2d(num_filters[-1], self.latent_dim, (1, 1), stride=1)
+        self.cov_factor_op = nn.Conv2d(num_filters[-1], self.latent_dim*self.rank, (1, 1), stride=1)
+
+        self.show_img = 0
+        self.show_seg = 0
+        self.show_concat = 0
+        self.show_enc = 0
+        self.sum_input = 0
+
+        # Initialize parameters
+        nn.init.kaiming_normal_(self.mean_op.weight, mode='fan_in', nonlinearity='relu')
+        nn.init.normal_(self.mean_op.bias)
+
+        nn.init.kaiming_normal_(self.log_cov_diag_op.weight, mode='fan_in', nonlinearity='relu')
+        nn.init.normal_(self.log_cov_diag_op.bias)
+
+        nn.init.kaiming_normal_(self.cov_factor_op.weight, mode='fan_in', nonlinearity='relu')
+        nn.init.normal_(self.cov_factor_op.bias)
+
+    def forward(self, input, segm=None, one_hot=True):
+
+        #If segmentation is not none, concatenate the mask to the channel axis of the input
+        if segm is not None:
+            self.show_img = input
+            self.show_seg = segm
+
+            if one_hot is True:
+                input = torch.cat((input, segm[:, :, 1, ...]), dim=1)
+            else:
+                input = torch.cat((input, segm), dim=1)
+
+            self.show_concat = input
+            self.sum_input = torch.sum(input)
+
+        encoding = self.encoder(input)
+        self.show_enc = encoding
+
+        # Mean over spatial dims
+        encoding = torch.mean(encoding,
+                              dim=(2, 3),
+                              keepdim=True)
+
+        # Squeeze operations to remove singleton dimensions
+        mu = self.mean_op(encoding)
+        mu = torch.squeeze(mu, dim=-1)
+        mu = torch.squeeze(mu, dim=-1)
+
+        cov_diag = torch.exp(self.log_cov_diag_op(encoding))
+        cov_diag = torch.squeeze(cov_diag, dim=-1)
+        cov_diag = torch.squeeze(cov_diag, dim=-1)
+
+        cov_factor = self.cov_factor_op(encoding)
+        cov_factor = torch.squeeze(cov_factor, dim=-1)
+        cov_factor = torch.squeeze(cov_factor, dim=-1)
+
+        # Change view to get the shape: [batch size, self.latent_dim, self.rank]
+        cov_factor = cov_factor.view(cov_factor.shape[0], self.latent_dim, self.rank)
+
+        dist = LowRankMultivariateNormal(loc=mu,
+                                         cov_factor=cov_factor,
+                                         cov_diag=cov_diag)
+
+        return dist
+
 class Fcomb(nn.Module):
     """
     A function composed of no_convs_fcomb times a 1x1 convolution that combines the sample taken from the latent space,
@@ -193,7 +279,7 @@ class ProbabilisticUnet(nn.Module):
     no_cons_per_block: no convs per block in the (convolutional) encoder of prior and posterior
     """
 
-    def __init__(self, input_channels=1, label_channels=1, num_classes=1, num_filters=[32,64,128,192], latent_dim=6, no_convs_fcomb=4, beta=10.0, mc_dropout=False, dropout_rate=0.5):
+    def __init__(self, input_channels=1, label_channels=1, num_classes=1, num_filters=[32,64,128,192], latent_dim=6, no_convs_fcomb=4, beta=10.0, mc_dropout=False, dropout_rate=0.5, low_rank=False, rank=-1):
         super(ProbabilisticUnet, self).__init__()
         self.input_channels = input_channels
         self.num_classes = num_classes
@@ -205,13 +291,56 @@ class ProbabilisticUnet(nn.Module):
         self.beta = beta
         self.z_prior_sample = 0
         self.mc_dropout = mc_dropout
+        self.low_rank = low_rank
+
+        if self.low_rank is True:
+            if rank < 0: # Not initialized
+                self.rank = self.latent_dim # Full covariance matrix
+            else:
+                self.rank = rank
+
 
         # Main U-Net
         self.unet = Unet(self.input_channels, self.num_classes, self.num_filters, self.initializers, apply_last_layer=False, padding=True, mc_dropout=mc_dropout, dropout_rate=dropout_rate)
+
         # Prior Net
-        self.prior = AxisAlignedConvGaussian(self.input_channels, label_channels, self.num_filters, self.no_convs_per_block, self.latent_dim,  self.initializers,)
+        if self.low_rank is False:
+            self.prior = AxisAlignedConvGaussian(input_channels=self.input_channels,
+                                                 label_channels=label_channels,
+                                                 num_filters=self.num_filters,
+                                                 no_convs_per_block=self.no_convs_per_block,
+                                                 latent_dim=self.latent_dim,
+                                                 initializers=self.initializers,
+                                                 posterior=False)
+        else:
+            self.prior = LowRankCovConvGaussian(input_channels=self.input_channels,
+                                                label_channels=label_channels,
+                                                num_filters=self.num_filters,
+                                                no_convs_per_block=self.no_convs_per_block,
+                                                latent_dim=self.latent_dim,
+                                                initializers=self.initializers,
+                                                rank=self.rank,
+                                                posterior=False)
+
         # Posterior Net
-        self.posterior = AxisAlignedConvGaussian(self.input_channels, label_channels, self.num_filters, self.no_convs_per_block, self.latent_dim, self.initializers, posterior=True)
+        if self.low_rank is False:
+            self.posterior = AxisAlignedConvGaussian(input_channels=self.input_channels,
+                                                     label_channels=label_channels,
+                                                     num_filters=self.num_filters,
+                                                     no_convs_per_block=self.no_convs_per_block,
+                                                     latent_dim=self.latent_dim,
+                                                     initializers=self.initializers,
+                                                     posterior=True)
+        else:
+            self.posterior = LowRankCovConvGaussian(input_channels=self.input_channels,
+                                                    label_channels=label_channels,
+                                                    num_filters=self.num_filters,
+                                                    no_convs_per_block=self.no_convs_per_block,
+                                                    latent_dim=self.latent_dim,
+                                                    initializers=self.initializers,
+                                                    rank=self.rank,
+                                                    posterior=True)
+
         # 1x1 convolutions to merge samples from the posterior into the decoder output
         self.fcomb = Fcomb(self.num_filters, self.latent_dim, self.input_channels, self.num_classes, self.no_convs_fcomb, {'w':'orthogonal', 'b':'normal'}, use_tile=True)
 
@@ -333,6 +462,9 @@ class ProbabilisticUnet(nn.Module):
         loss_dict = {}
         loss_dict['loss'] = (reconstruction_loss + self.beta*kl_loss)
 
+        # FIXME: REMOVE THIS!!!
+        # L2 regularization should applied to ALL weights, not just the
+        # ones with dropout!
         if self.mc_dropout is True:
             l2_reg = 0
             for param_tensor in self.l2_params:

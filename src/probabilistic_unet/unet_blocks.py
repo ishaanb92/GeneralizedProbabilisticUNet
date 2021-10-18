@@ -25,15 +25,18 @@ class DownConvBlock(nn.Module):
         layers.append(nn.ReLU(inplace=True))
 
         layers.append(nn.Conv2d(output_dim, output_dim, kernel_size=3, stride=1, padding=int(padding)))
+
         if dropout is True:
-            layers.append(nn.Dropout(p=dropout_rate))
+            layers.append(nn.Dropout2d(p=dropout_rate))
+
         layers.append(nn.ReLU(inplace=True))
 
         self.layers = nn.Sequential(*layers)
 
         self.layers.apply(init_weights)
 
-    # Return weights and biases to be used later in L2-regularization of MC-Dropout layers
+    # Return weights and biases to be used later in L2-regularization of MC-Dropout2d layers
+    # FIXME: This needs to removed. Weight decay term in the loss function is over ALL weights and biases. See Appendix of Gal and Ghahramani (2015) or Y.Gal PhD thesis (Chapter 6)
     def get_conv_params(self):
         params = []
 

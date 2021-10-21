@@ -4,7 +4,7 @@ from .unet_blocks import *
 from .unet import Unet
 from .utils import init_weights,init_weights_orthogonal_normal, l2_regularisation
 import torch.nn.functional as F
-from torch.distributions import Normal, Independent, kl, LowRankMultivariateNormal
+from torch.distributions import Normal, Independent, kl, LowRankMultivariateNormal, Categorical, MixtureSameFamily
 
 class Encoder(nn.Module):
     """
@@ -52,7 +52,7 @@ class AxisAlignedConvGaussian(nn.Module):
     """
     A convolutional net that parametrizes a Gaussian distribution with axis aligned covariance matrix.
     """
-    def __init__(self, input_channels, label_channels, num_filters, no_convs_per_block, latent_dim, initializers, posterior=False):
+    def __init__(self, input_channels, label_channels, num_filters, no_convs_per_block, latent_dim, initializers, posterior=False, n_components=1):
         super(AxisAlignedConvGaussian, self).__init__()
         self.input_channels = input_channels
         self.channel_axis = 1
@@ -60,21 +60,32 @@ class AxisAlignedConvGaussian(nn.Module):
         self.no_convs_per_block = no_convs_per_block
         self.latent_dim = latent_dim
         self.posterior = posterior
+        self.n_components = n_components
+
         if self.posterior:
             self.name = 'Posterior'
         else:
             self.name = 'Prior'
 
+        self.conv_layer = nn.ModuleList()
+
         self.encoder = Encoder(self.input_channels, label_channels, self.num_filters, self.no_convs_per_block, initializers, posterior=self.posterior)
-        self.conv_layer = nn.Conv2d(num_filters[-1], 2 * self.latent_dim, (1,1), stride=1)
+
+        for mix_component in range(self.n_components):
+            self.conv_layer.append(nn.Conv2d(num_filters[-1], 2 * self.latent_dim, (1,1), stride=1))
+
+        if self.n_components > 1:
+            self.mixture_weights_conv = nn.Conv2d(num_filters[-1], self.n_components, (1, 1), stride=1)
+
         self.show_img = 0
         self.show_seg = 0
         self.show_concat = 0
         self.show_enc = 0
         self.sum_input = 0
 
-        nn.init.kaiming_normal_(self.conv_layer.weight, mode='fan_in', nonlinearity='relu')
-        nn.init.normal_(self.conv_layer.bias)
+        for conv_op in self.conv_layer:
+            nn.init.kaiming_normal_(conv_op.weight, mode='fan_in', nonlinearity='relu')
+            nn.init.normal_(conv_op.bias)
 
     def forward(self, input, segm=None, one_hot=True):
 
@@ -98,27 +109,51 @@ class AxisAlignedConvGaussian(nn.Module):
         encoding = torch.mean(encoding, dim=2, keepdim=True)
         encoding = torch.mean(encoding, dim=3, keepdim=True)
 
+        mu = torch.zeros(size=(encoding.shape[0], self.n_components, self.latent_dim),
+                         dtype=encoding.dtype,
+                         device=encoding.device)
+
+        log_sigma = torch.zeros(size=(encoding.shape[0], self.n_components, self.latent_dim),
+                                dtype=encoding.dtype,
+                                device=encoding.device)
+
         #Convert encoding to 2 x latent dim and split up for mu and log_sigma
-        mu_log_sigma = self.conv_layer(encoding)
+        for mix_component, conv_op in enumerate(self.conv_layer):
 
-        #We squeeze the second dimension twice, since otherwise it won't work when batch size is equal to 1
-        mu_log_sigma = torch.squeeze(mu_log_sigma, dim=2)
-        mu_log_sigma = torch.squeeze(mu_log_sigma, dim=2)
+            mu_log_sigma = conv_op(encoding)
+            #We squeeze the second dimension twice, since otherwise it won't work when batch size is equal to 1
+            mu_log_sigma = torch.squeeze(mu_log_sigma, dim=2)
+            mu_log_sigma = torch.squeeze(mu_log_sigma, dim=2)
 
-        mu = mu_log_sigma[:,:self.latent_dim]
-        log_sigma = mu_log_sigma[:,self.latent_dim:]
+            mu[:, mix_component, :] = mu_log_sigma[:, :self.latent_dim]
+            log_sigma[:, mix_component, :] = mu_log_sigma[:, self.latent_dim:]
 
         #This is a multivariate normal with diagonal covariance matrix sigma
         #https://github.com/pytorch/pytorch/pull/11178
         # Define the torch.distribution so that samples can be generated!
-        dist = Independent(Normal(loc=mu, scale=torch.exp(log_sigma)),1)
+        if self.n_components == 1:
+            dist = Independent(Normal(loc=mu[:, 0, :], scale=torch.exp(log_sigma[:,0,:])),1)
+        else:
+            # Construct the categorical distribution for the mixture weights
+            logits = self.mixture_weights_conv(encoding) # Shape : [batch_size, n_components, 1, 1]
+            logits = torch.squeeze(logits, dim=-1)
+            logits = torch.squeeze(logits, dim=-1)
+            cat_distribution = Categorical(logits=logits)
+            comp = Independent(Normal(loc=mu, scale=torch.exp(log_sigma)), 1)
+
+            # Create a GMM
+            dist = MixtureSameFamily(mixture_distribution=cat_distribution,
+                                     component_distribution=comp)
+
+        assert(dist.batch_shape[0] == input.shape[0])
+
         return dist
 
 class LowRankCovConvGaussian(nn.Module):
     """
     A convolutional net that parametrizes a Gaussian distribution with low-rank approximation of covariance matrix.
     """
-    def __init__(self, input_channels, label_channels, num_filters, no_convs_per_block, latent_dim, initializers, posterior=False, rank=10):
+    def __init__(self, input_channels, label_channels, num_filters, no_convs_per_block, latent_dim, initializers, posterior=False, rank=1, n_components=1):
         super(LowRankCovConvGaussian, self).__init__()
         self.input_channels = input_channels
         self.channel_axis = 1
@@ -127,6 +162,7 @@ class LowRankCovConvGaussian(nn.Module):
         self.latent_dim = latent_dim
         self.posterior = posterior
         self.rank = rank
+        self.n_components = n_components
 
         if self.posterior:
             self.name = 'Posterior'
@@ -134,6 +170,9 @@ class LowRankCovConvGaussian(nn.Module):
             self.name = 'Prior'
 
         self.encoder = Encoder(self.input_channels, label_channels, self.num_filters, self.no_convs_per_block, initializers, posterior=self.posterior)
+
+
+
 
         self.mean_op = nn.Conv2d(num_filters[-1], self.latent_dim, (1, 1), stride=1)
         self.log_cov_diag_op = nn.Conv2d(num_filters[-1], self.latent_dim, (1, 1), stride=1)
@@ -183,9 +222,10 @@ class LowRankCovConvGaussian(nn.Module):
         mu = torch.squeeze(mu, dim=-1)
         mu = torch.squeeze(mu, dim=-1)
 
-        cov_diag = torch.exp(self.log_cov_diag_op(encoding))
+        cov_diag = self.log_cov_diag_op(encoding)
         cov_diag = torch.squeeze(cov_diag, dim=-1)
         cov_diag = torch.squeeze(cov_diag, dim=-1)
+        cov_diag = torch.exp(cov_diag)
 
         cov_factor = self.cov_factor_op(encoding)
         cov_factor = torch.squeeze(cov_factor, dim=-1)
@@ -194,9 +234,12 @@ class LowRankCovConvGaussian(nn.Module):
         # Change view to get the shape: [batch size, self.latent_dim, self.rank]
         cov_factor = cov_factor.view(cov_factor.shape[0], self.latent_dim, self.rank)
 
+        # Full-rank (rank=latent dimension) does not work for z-dim = 64
         dist = LowRankMultivariateNormal(loc=mu,
                                          cov_factor=cov_factor,
                                          cov_diag=cov_diag)
+
+        assert(dist.batch_shape[0] == input.shape[0])
 
         return dist
 
@@ -279,7 +322,7 @@ class ProbabilisticUnet(nn.Module):
     no_cons_per_block: no convs per block in the (convolutional) encoder of prior and posterior
     """
 
-    def __init__(self, input_channels=1, label_channels=1, num_classes=1, num_filters=[32,64,128,192], latent_dim=6, no_convs_fcomb=4, beta=10.0, mc_dropout=False, dropout_rate=0.5, low_rank=False, rank=-1):
+    def __init__(self, input_channels=1, label_channels=1, num_classes=1, num_filters=[32,64,128,192], latent_dim=6, no_convs_fcomb=4, beta=10.0, mc_dropout=False, dropout_rate=0.5, low_rank=False, rank=-1, n_components=1):
         super(ProbabilisticUnet, self).__init__()
         self.input_channels = input_channels
         self.num_classes = num_classes
@@ -292,6 +335,7 @@ class ProbabilisticUnet(nn.Module):
         self.z_prior_sample = 0
         self.mc_dropout = mc_dropout
         self.low_rank = low_rank
+        self.n_components = n_components
 
         if self.low_rank is True:
             if rank < 0: # Not initialized
@@ -311,7 +355,8 @@ class ProbabilisticUnet(nn.Module):
                                                  no_convs_per_block=self.no_convs_per_block,
                                                  latent_dim=self.latent_dim,
                                                  initializers=self.initializers,
-                                                 posterior=False)
+                                                 posterior=False,
+                                                 n_components=self.n_components)
         else:
             self.prior = LowRankCovConvGaussian(input_channels=self.input_channels,
                                                 label_channels=label_channels,
@@ -320,7 +365,8 @@ class ProbabilisticUnet(nn.Module):
                                                 latent_dim=self.latent_dim,
                                                 initializers=self.initializers,
                                                 rank=self.rank,
-                                                posterior=False)
+                                                posterior=False,
+                                                n_components=self.n_components)
 
         # Posterior Net
         if self.low_rank is False:
@@ -330,7 +376,8 @@ class ProbabilisticUnet(nn.Module):
                                                      no_convs_per_block=self.no_convs_per_block,
                                                      latent_dim=self.latent_dim,
                                                      initializers=self.initializers,
-                                                     posterior=True)
+                                                     posterior=True,
+                                                     n_components=self.n_components)
         else:
             self.posterior = LowRankCovConvGaussian(input_channels=self.input_channels,
                                                     label_channels=label_channels,
@@ -339,7 +386,8 @@ class ProbabilisticUnet(nn.Module):
                                                     latent_dim=self.latent_dim,
                                                     initializers=self.initializers,
                                                     rank=self.rank,
-                                                    posterior=True)
+                                                    posterior=True,
+                                                    n_components=self.n_components)
 
         # 1x1 convolutions to merge samples from the posterior into the decoder output
         self.fcomb = Fcomb(self.num_filters, self.latent_dim, self.input_channels, self.num_classes, self.no_convs_fcomb, {'w':'orthogonal', 'b':'normal'}, use_tile=True)
@@ -356,22 +404,21 @@ class ProbabilisticUnet(nn.Module):
         self.l2_params = self.unet.get_l2_params()
 
 
-    def sample(self, testing=False):
+    def sample(self):
         """
-        Sample a segmentation by reconstructing from a prior sample
-        and combining this with UNet features
+        Sample from the prior latent space. Used in inference!
+
         """
-        if testing == False:
-            z_prior = self.prior_latent_space.rsample()
-            self.z_prior_sample = z_prior
-        else:
-            #You can choose whether you mean a sample or the mean here. For the GED it is important to take a sample.
+        if self.n_components > 1:
             z_prior = self.prior_latent_space.sample()
-            self.z_prior_sample = z_prior
-        return self.fcomb.forward(self.unet_features,z_prior)
+        else:
+            z_prior = self.prior_latent_space.rsample()
+
+        return self.fcomb.forward(self.unet_features, z_prior)
 
 
-    def reconstruct(self, use_posterior_mean=False, calculate_posterior=False, z=None):
+
+    def reconstruct(self, use_posterior_mean=False, z=None):
         """
         Reconstruct a segmentation from a posterior sample (decoding a posterior sample) and UNet feature map
         use_posterior_mean: use posterior_mean instead of sampling z_q
@@ -379,30 +426,41 @@ class ProbabilisticUnet(nn.Module):
         """
         if use_posterior_mean:
             z = self.posterior_latent_space.loc
-        else:
-            if calculate_posterior:
+        elif z is None:
+            if self.n_components > 1:
+                z = self.posterior_latent_space.sample() #FIXME: rsample() [sampling via reparametrization trick] not implemented for mixture models in Pytorch!
+            else:
                 z = self.posterior_latent_space.rsample()
 
         return self.fcomb.forward(self.unet_features, z)
 
 
-    def kl_divergence(self, analytic=True, calculate_posterior=False, z_posterior=None):
+    def kl_divergence(self, mc_samples=100):
         """
         Calculate the KL divergence between the posterior and prior KL(Q||P)
         analytic: calculate KL analytically or via sampling from the posterior
         calculate_posterior: if we use samapling to approximate KL we can sample here or supply a sample
         """
-        if analytic:
+
+        try:
             #Neeed to add this to torch source code, see: https://github.com/pytorch/pytorch/issues/13545
             kl_div = kl.kl_divergence(self.posterior_latent_space,
                                       self.prior_latent_space)
+        except NotImplementedError:
+            # If the analytic KL divergence does not exists, use MC-approximation
+            # See: 'APPROXIMATING THE KULLBACK LEIBLER DIVERGENCE BETWEEN GAUSSIAN MIXTURE MODELS' by Hershey and Olsen (2007)
+            monte_carlo_terms = torch.zeros(size=(mc_samples, self.posterior_latent_space.batch_shape[0]),
+                                                  dtype=self.unet_features.dtype,
+                                                  device=self.unet_features.device)
+            for mc_iter in range(mc_samples):
+                posterior_sample = self.posterior_latent_space.sample() #FIXME: Implement rsample() method
+                log_posterior_prob = self.posterior_latent_space.log_prob(posterior_sample)
+                log_prior_prob = self.prior_latent_space.log_prob(posterior_sample)
+                monte_carlo_terms[mc_iter, :] = log_posterior_prob - log_prior_prob
 
-        else:
-            if calculate_posterior:
-                z_posterior = self.posterior_latent_space.rsample()
-            log_posterior_prob = self.posterior_latent_space.log_prob(z_posterior)
-            log_prior_prob = self.prior_latent_space.log_prob(z_posterior)
-            kl_div = log_posterior_prob - log_prior_prob
+            # MC-approximation
+            kl_div = torch.mean(monte_carlo_terms, dim=0)
+
         return kl_div
 
     def compute_loss(self, segm, train=True, class_weight=None):
@@ -428,22 +486,26 @@ class ProbabilisticUnet(nn.Module):
             # The posterior latent space is generated by the mean segmentation over annotations!
             # We assume samples from the posterior will learn to approximate the "modes" of the labels
             if train is True:
-                z_posterior = self.posterior_latent_space.rsample()
+                if self.n_components == 1:
+                    z_posterior = self.posterior_latent_space.rsample()
+                else:
+                    z_posterior = self.posterior_latent_space.sample()
 
                 # KL-divergence between z_prior and z_posterior
-                kl_loss += torch.mean(self.kl_divergence(analytic=True,
-                                                         calculate_posterior=False,
-                                                         z_posterior=z_posterior))
+                kl_loss += torch.mean(self.kl_divergence())
 
                 # Output generated from the posterior
                 reconstruction = self.reconstruct(use_posterior_mean=False,
-                                                  calculate_posterior=False,
                                                   z=z_posterior)
 
             else: # For validation loss, sample from z_prior i.e. the latent space conditioned only on the data
-                z_prior = self.prior_latent_space.rsample()
+
+                if self.n_components == 1:
+                    z_prior = self.prior_latent_space.rsample()
+                else:
+                    z_prior = self.prior_latent_space.sample()
+
                 reconstruction = self.reconstruct(use_posterior_mean=False,
-                                                  calculate_posterior=False,
                                                   z=z_prior)
 
             for task in range(n_tasks):

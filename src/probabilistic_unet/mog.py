@@ -66,9 +66,13 @@ class MixtureOfGaussians(MixtureSameFamily, Distribution):
 
         mix_sample = self.mixture_distribution.rsample(sample_shape)
 
-        # Straight-Through Gumble-Softmax -- Take the argmax in the forward pass and use the Gumble-Softmax during backpropagation
+        # Straight-Through Gumble-Softmax: https://pytorch.org/docs/stable/_modules/torch/nn/functional.html#gumbel_softmax
+        # See also: https://wiki.lzhbrian.me/notes/differientiable-sampling-and-argmax
         # See: E. Jang, S. Gu, and B. Poole. Categorical Reparameterization with Gumbel-Softmax (2017), ICLR 2017
-        mix_sample = torch.argmax(mix_sample, dim=-1)
+        # In the forward-pass, we get the one-hot vector (the actual sample cancels out) and in the backward pass
+        # argmax does not have a contribute to the gradient but mix_sample does!
+        # TODO: Verify gradient flow!!
+        mix_sample = torch.argmax(mix_sample, dim=-1) - mix_sample.detach() + mix_sample
 
         mix_shape = mix_sample.shape
 
@@ -82,7 +86,7 @@ class MixtureOfGaussians(MixtureSameFamily, Distribution):
             torch.Size([1]*len(mix_shape)) + torch.Size([1]) + es)
 
 
-        samples = torch.gather(comp_samples, gather_dim, mix_sample_r)
+        samples = torch.gather(comp_samples, gather_dim, mix_sample_r.long())
 
         return samples.squeeze(gather_dim)
 

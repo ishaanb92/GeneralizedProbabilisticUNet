@@ -54,7 +54,7 @@ class Unet(nn.Module):
             #nn.init.normal_(self.last_layer.bias)
 
 
-    def forward(self, x, val):
+    def forward(self, x, val=False):
         blocks = []
         for i, down in enumerate(self.contracting_path):
             x = down(x)

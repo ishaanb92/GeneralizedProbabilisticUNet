@@ -75,6 +75,7 @@ class AxisAlignedConvGaussian(nn.Module):
         for mix_component in range(self.n_components):
             self.conv_layer.append(nn.Conv2d(num_filters[-1], 2 * self.latent_dim, (1,1), stride=1))
 
+        # 1x1 convolution to compute logits to parametrize the mixture distribution
         if self.n_components > 1:
             self.mixture_weights_conv = nn.Conv2d(num_filters[-1], self.n_components, (1, 1), stride=1)
 
@@ -84,6 +85,7 @@ class AxisAlignedConvGaussian(nn.Module):
         self.show_enc = 0
         self.sum_input = 0
 
+        # Initialize convolution layers
         for conv_op in self.conv_layer:
             nn.init.kaiming_normal_(conv_op.weight, mode='fan_in', nonlinearity='relu')
             nn.init.normal_(conv_op.bias)
@@ -110,6 +112,7 @@ class AxisAlignedConvGaussian(nn.Module):
         encoding = torch.mean(encoding, dim=2, keepdim=True)
         encoding = torch.mean(encoding, dim=3, keepdim=True)
 
+        # Initialize empty tensors to hold mean(s) and log-sigma(s)
         mu = torch.zeros(size=(encoding.shape[0], self.n_components, self.latent_dim),
                          dtype=encoding.dtype,
                          device=encoding.device)
@@ -177,7 +180,7 @@ class LowRankCovConvGaussian(nn.Module):
         self.encoder = Encoder(self.input_channels, label_channels, self.num_filters, self.no_convs_per_block, initializers, posterior=self.posterior)
 
 
-
+        # Low-rank approximation via covariance factors
         self.mean_op = nn.ModuleList()
         self.log_cov_diag_op = nn.ModuleList()
         self.cov_factor_op = nn.ModuleList()
@@ -230,8 +233,6 @@ class LowRankCovConvGaussian(nn.Module):
         encoding = torch.mean(encoding,
                               dim=(2, 3),
                               keepdim=True)
-
-        # Squeeze operations to remove singleton dimensions
 
         mu_mixture = torch.zeros(size=(encoding.shape[0], self.n_components, self.latent_dim),
                                  dtype=encoding.dtype,
@@ -369,7 +370,7 @@ class ProbabilisticUnet(nn.Module):
     no_cons_per_block: no convs per block in the (convolutional) encoder of prior and posterior
     """
 
-    def __init__(self, input_channels=1, label_channels=1, num_classes=1, num_filters=[32,64,128,192], latent_dim=6, no_convs_fcomb=4, beta=10.0, mc_dropout=False, dropout_rate=0.5, low_rank=False, rank=-1, n_components=1):
+    def __init__(self, input_channels=1, label_channels=1, num_classes=1, num_filters=[32,64,128,192], latent_dim=6, no_convs_fcomb=4, beta=10.0, mc_dropout=False, dropout_rate=0.0, low_rank=False, rank=-1, n_components=1):
         super(ProbabilisticUnet, self).__init__()
         self.input_channels = input_channels
         self.num_classes = num_classes
@@ -386,7 +387,7 @@ class ProbabilisticUnet(nn.Module):
 
         if self.low_rank is True:
             if rank < 0: # Not initialized
-                self.rank = self.latent_dim # Full covariance matrix
+                raise ValueError('Low-rank set to True but rank not specified')
             else:
                 self.rank = rank
 
@@ -492,8 +493,9 @@ class ProbabilisticUnet(nn.Module):
             monte_carlo_terms = torch.zeros(size=(mc_samples, self.posterior_latent_space.batch_shape[0]),
                                                   dtype=self.unet_features.dtype,
                                                   device=self.unet_features.device)
+            # MC approximation of KL(q(z|x, y) || p(z|x)) = 1/N(\Sigma log(q(z) - log(p(z)))), z ~ q(z|x, y)
             for mc_iter in range(mc_samples):
-                posterior_sample = self.posterior_latent_space.rsample() #FIXME: Implement rsample() method
+                posterior_sample = self.posterior_latent_space.rsample()
                 log_posterior_prob = self.posterior_latent_space.log_prob(posterior_sample)
                 log_prior_prob = self.prior_latent_space.log_prob(posterior_sample)
                 monte_carlo_terms[mc_iter, :] = log_posterior_prob - log_prior_prob
@@ -512,7 +514,7 @@ class ProbabilisticUnet(nn.Module):
         n_tasks = segm.shape[2]
         n_annotations = segm.shape[1]
 
-        if n_tasks == 1: # Squeeze the labels
+        if n_tasks == 1:
             criterion = nn.CrossEntropyLoss(weight=class_weight) # Softmax + NLL
         else:
             criterion = nn.BCEWithLogitsLoss() # Sigmoid + BCE (per-task)
@@ -529,6 +531,7 @@ class ProbabilisticUnet(nn.Module):
                 z_posterior = self.posterior_latent_space.rsample()
 
                 # KL-divergence between z_prior and z_posterior
+                # Mean over the batch
                 kl_loss += torch.mean(self.kl_divergence())
 
                 # Output generated from the posterior

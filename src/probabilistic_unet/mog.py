@@ -59,12 +59,10 @@ class MixtureOfGaussians(MixtureSameFamily, Distribution):
                               validate_args=validate_args)
 
     def rsample(self, sample_shape=torch.Size()):
-        sample_len = len(sample_shape)
-        batch_len = len(self.batch_shape)
-        gather_dim = sample_len + batch_len
-        es = self.event_shape
 
+        # Shape : [B, n_components]
         mix_sample = self.mixture_distribution.rsample(sample_shape)
+
 
         # Straight-Through Gumble-Softmax: https://pytorch.org/docs/stable/_modules/torch/nn/functional.html#gumbel_softmax
         # See also: https://wiki.lzhbrian.me/notes/differientiable-sampling-and-argmax
@@ -72,23 +70,27 @@ class MixtureOfGaussians(MixtureSameFamily, Distribution):
         # In the forward-pass, we get the one-hot vector (the actual sample cancels out) and in the backward pass
         # argmax does not have a contribute to the gradient but mix_sample does!
         # TODO: Verify gradient flow!!
-        mix_sample = torch.argmax(mix_sample, dim=-1) - mix_sample.detach() + mix_sample
+        index = mix_sample.max(dim=-1, keepdim=True)[1]
+        sample_mask = torch.zeros_like(mix_sample).scatter_(-1, index, 1.0)
 
-        mix_shape = mix_sample.shape
+        # Shape: [B, n_components]
+        sample_mask = sample_mask - mix_sample.detach() + mix_sample
 
+        # Shape: [B, n_components, z_dim]
         comp_samples = self.component_distribution.rsample(sample_shape)
 
-        # Gather along the k dimension
-        mix_sample_r = mix_sample.reshape(
-            mix_shape + torch.Size([1]*(len(es) + 1)))
+        # Add a "fake" axis to the sample mask to broadcast the multiplication
+        samples = torch.mul(comp_samples, sample_mask.unsqueeze(dim=-1))
 
-        mix_sample_r = mix_sample_r.repeat(
-            torch.Size([1]*len(mix_shape)) + torch.Size([1]) + es)
+        # The one-hot sample mask will zero-out all the rows
+        # apart from the "selected" mixture component
+        # So by summing along the columns, we recover the
+        # sample from the "winning" Gaussian
+        samples = torch.sum(samples, dim=1)
+
+        return samples
 
 
-        samples = torch.gather(comp_samples, gather_dim, mix_sample_r.long())
-
-        return samples.squeeze(gather_dim)
 
 
 

@@ -145,7 +145,7 @@ class AxisAlignedConvGaussian(nn.Module):
             logits = torch.squeeze(logits, dim=-1)
 
             cat_distribution = RelaxedOneHotCategorical(logits=logits,
-                                                        temperature=torch.Tensor([0.5]).to(logits.device))
+                                                        temperature=torch.Tensor([0.1]).to(logits.device))
 
             comp_distribution = Independent(Normal(loc=mu, scale=torch.exp(log_sigma)), 1)
 
@@ -277,7 +277,7 @@ class LowRankCovConvGaussian(nn.Module):
             logits = torch.squeeze(logits, dim=-1)
 
             cat_distribution = RelaxedOneHotCategorical(logits=logits,
-                                                        temperature=torch.Tensor([0.5]).to(logits.device))
+                                                        temperature=torch.Tensor([0.1]).to(logits.device))
 
             comp_distribution = LowRankMultivariateNormal(loc=mu_mixture,
                                                           cov_factor=cov_factor_mixture,

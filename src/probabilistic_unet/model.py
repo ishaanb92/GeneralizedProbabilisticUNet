@@ -53,7 +53,7 @@ class AxisAlignedConvGaussian(nn.Module):
     """
     A convolutional net that parametrizes a Gaussian distribution with axis aligned covariance matrix.
     """
-    def __init__(self, input_channels, label_channels, num_filters, no_convs_per_block, latent_dim, initializers, posterior=False, n_components=1):
+    def __init__(self, input_channels, label_channels, num_filters, no_convs_per_block, latent_dim, initializers, posterior=False, n_components=1, temperature=0.1):
         super(AxisAlignedConvGaussian, self).__init__()
         self.input_channels = input_channels
         self.channel_axis = 1
@@ -62,6 +62,7 @@ class AxisAlignedConvGaussian(nn.Module):
         self.latent_dim = latent_dim
         self.posterior = posterior
         self.n_components = n_components
+        self.temperature = temperature
 
         if self.posterior:
             self.name = 'Posterior'
@@ -145,7 +146,7 @@ class AxisAlignedConvGaussian(nn.Module):
             logits = torch.squeeze(logits, dim=-1)
 
             cat_distribution = RelaxedOneHotCategorical(logits=logits,
-                                                        temperature=torch.Tensor([0.1]).to(logits.device))
+                                                        temperature=torch.Tensor([self.temperature]).to(logits.device))
 
             comp_distribution = Independent(Normal(loc=mu, scale=torch.exp(log_sigma)), 1)
 
@@ -161,7 +162,7 @@ class LowRankCovConvGaussian(nn.Module):
     """
     A convolutional net that parametrizes a Gaussian distribution with low-rank approximation of covariance matrix.
     """
-    def __init__(self, input_channels, label_channels, num_filters, no_convs_per_block, latent_dim, initializers, posterior=False, rank=1, n_components=1):
+    def __init__(self, input_channels, label_channels, num_filters, no_convs_per_block, latent_dim, initializers, posterior=False, rank=1, n_components=1, temperature=0.1):
         super(LowRankCovConvGaussian, self).__init__()
         self.input_channels = input_channels
         self.channel_axis = 1
@@ -171,6 +172,7 @@ class LowRankCovConvGaussian(nn.Module):
         self.posterior = posterior
         self.rank = rank
         self.n_components = n_components
+        self.temperature = temperature
 
         if self.posterior:
             self.name = 'Posterior'
@@ -277,7 +279,7 @@ class LowRankCovConvGaussian(nn.Module):
             logits = torch.squeeze(logits, dim=-1)
 
             cat_distribution = RelaxedOneHotCategorical(logits=logits,
-                                                        temperature=torch.Tensor([0.1]).to(logits.device))
+                                                        temperature=torch.Tensor([self.temperature]).to(logits.device))
 
             comp_distribution = LowRankMultivariateNormal(loc=mu_mixture,
                                                           cov_factor=cov_factor_mixture,
@@ -370,7 +372,7 @@ class ProbabilisticUnet(nn.Module):
     no_cons_per_block: no convs per block in the (convolutional) encoder of prior and posterior
     """
 
-    def __init__(self, input_channels=1, label_channels=1, num_classes=1, num_filters=[32,64,128,192], latent_dim=6, no_convs_fcomb=4, beta=10.0, mc_dropout=False, dropout_rate=0.0, low_rank=False, rank=-1, n_components=1):
+    def __init__(self, input_channels=1, label_channels=1, num_classes=1, num_filters=[32,64,128,192], latent_dim=6, no_convs_fcomb=4, beta=10.0, mc_dropout=False, dropout_rate=0.0, low_rank=False, rank=-1, n_components=1, temperature=0.1):
         super(ProbabilisticUnet, self).__init__()
         self.input_channels = input_channels
         self.num_classes = num_classes
@@ -384,6 +386,7 @@ class ProbabilisticUnet(nn.Module):
         self.mc_dropout = mc_dropout
         self.low_rank = low_rank
         self.n_components = n_components
+        self.temperature = temperature
 
         if self.low_rank is True:
             if rank < 0: # Not initialized
@@ -404,7 +407,8 @@ class ProbabilisticUnet(nn.Module):
                                                  latent_dim=self.latent_dim,
                                                  initializers=self.initializers,
                                                  posterior=False,
-                                                 n_components=self.n_components)
+                                                 n_components=self.n_components,
+                                                 temperature=self.temperature)
         else:
             self.prior = LowRankCovConvGaussian(input_channels=self.input_channels,
                                                 label_channels=label_channels,
@@ -414,7 +418,8 @@ class ProbabilisticUnet(nn.Module):
                                                 initializers=self.initializers,
                                                 rank=self.rank,
                                                 posterior=False,
-                                                n_components=self.n_components)
+                                                n_components=self.n_components,
+                                                temperature=self.temperature)
 
         # Posterior Net
         if self.low_rank is False:
@@ -425,7 +430,8 @@ class ProbabilisticUnet(nn.Module):
                                                      latent_dim=self.latent_dim,
                                                      initializers=self.initializers,
                                                      posterior=True,
-                                                     n_components=self.n_components)
+                                                     n_components=self.n_components,
+                                                     temperature=self.temperature)
         else:
             self.posterior = LowRankCovConvGaussian(input_channels=self.input_channels,
                                                     label_channels=label_channels,
@@ -435,7 +441,8 @@ class ProbabilisticUnet(nn.Module):
                                                     initializers=self.initializers,
                                                     rank=self.rank,
                                                     posterior=True,
-                                                    n_components=self.n_components)
+                                                    n_components=self.n_components,
+                                                    temperature=self.temperature)
 
         # 1x1 convolutions to merge samples from the posterior into the decoder output
         self.fcomb = Fcomb(self.num_filters, self.latent_dim, self.input_channels, self.num_classes, self.no_convs_fcomb, {'w':'orthogonal', 'b':'normal'}, use_tile=True)

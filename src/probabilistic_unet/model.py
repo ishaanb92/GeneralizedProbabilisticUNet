@@ -99,8 +99,10 @@ class AxisAlignedConvGaussian(nn.Module):
             self.show_seg = segm
 
             if one_hot is True:
+                segm = torch.squeeze(segm, dim=2) # Get rid of the task axis
                 input = torch.cat((input, segm[:, :, 1, ...]), dim=1)
             else:
+                segm = torch.flatten(segm, start_dim=1, end_dim=2)
                 input = torch.cat((input, segm), dim=1)
 
             self.show_concat = input
@@ -452,123 +454,44 @@ class ProbabilisticUnet(nn.Module):
         Construct prior latent space for patch and run patch through UNet,
         in case training is True also construct posterior latent space
         """
+        # Get the distribution(s)
         if training:
-            self.posterior_latent_space = self.posterior.forward(patch, segm, one_hot=one_hot)
-        self.prior_latent_space = self.prior.forward(patch)
-        self.unet_features = self.unet.forward(patch,False)
-        self.l2_params = self.unet.get_l2_params()
+            posterior_latent_space = self.posterior.forward(patch, segm, one_hot=one_hot)
 
+        prior_latent_space = self.prior.forward(patch)
 
-    def sample(self):
+        # Get the U-net features
+        unet_features = self.unet.forward(patch,False)
+
+        if training:
+            # Create a label prediction by merging the unet_features and a sample from the posterior
+            reconstruction = self.sample(unet_features=unet_features,
+                                         z_dist=posterior_latent_space)
+        else:
+            # Create a label prediction by merging the unet_features and a sample from the posterior (at test-time)
+            reconstruction = self.sample(unet_features=unet_features,
+                                         z_dist=prior_latent_space)
+        output = {}
+        output['reconstruction'] = reconstruction
+        output['unet_features'] = unet_features
+
+        # Save the distribution so that we can use it to compute the KL-term in the ELBO
+        if training:
+            output['posterior_dist'] = posterior_latent_space
+        else:
+            output['posterior_dist'] = None
+
+        output['prior_dist'] = prior_latent_space
+
+        return output
+
+    # Sampling function that is used during training and testing
+    # Uses the u_net features computed in the forward() call
+    # Only the fcomb.forward() is run again
+    def sample(self, unet_features=None, z_dist=None):
         """
         Sample from the prior latent space. Used in inference!
 
         """
-        z_prior = self.prior_latent_space.rsample()
-        return self.fcomb.forward(self.unet_features, z_prior)
-
-
-
-    def reconstruct(self, use_posterior_mean=False, z=None):
-        """
-        Reconstruct a segmentation from a posterior sample (decoding a posterior sample) and UNet feature map
-        use_posterior_mean: use posterior_mean instead of sampling z_q
-        calculate_posterior: use a provided sample or sample from posterior latent space
-        """
-        if use_posterior_mean:
-            z = self.posterior_latent_space.loc
-        elif z is None:
-            z = self.posterior_latent_space.rsample()
-
-        return self.fcomb.forward(self.unet_features, z)
-
-
-    def kl_divergence(self, mc_samples=100):
-        """
-        Calculate the KL divergence between the posterior and prior KL(Q||P)
-        analytic: calculate KL analytically or via sampling from the posterior
-        calculate_posterior: if we use samapling to approximate KL we can sample here or supply a sample
-        """
-
-        try:
-            #Neeed to add this to torch source code, see: https://github.com/pytorch/pytorch/issues/13545
-            kl_div = kl.kl_divergence(self.posterior_latent_space,
-                                      self.prior_latent_space)
-        except NotImplementedError:
-            # If the analytic KL divergence does not exists, use MC-approximation
-            # See: 'APPROXIMATING THE KULLBACK LEIBLER DIVERGENCE BETWEEN GAUSSIAN MIXTURE MODELS' by Hershey and Olsen (2007)
-            monte_carlo_terms = torch.zeros(size=(mc_samples, self.posterior_latent_space.batch_shape[0]),
-                                                  dtype=self.unet_features.dtype,
-                                                  device=self.unet_features.device)
-            # MC approximation of KL(q(z|x, y) || p(z|x)) = 1/N(\Sigma log(q(z) - log(p(z)))), z ~ q(z|x, y)
-            for mc_iter in range(mc_samples):
-                posterior_sample = self.posterior_latent_space.rsample()
-                log_posterior_prob = self.posterior_latent_space.log_prob(posterior_sample)
-                log_prior_prob = self.prior_latent_space.log_prob(posterior_sample)
-                monte_carlo_terms[mc_iter, :] = log_posterior_prob - log_prior_prob
-
-            # MC-approximation
-            kl_div = torch.mean(monte_carlo_terms, dim=0)
-
-        return kl_div
-
-    def compute_loss(self, segm, train=True, class_weight=None):
-        """
-        Calculate the evidence lower bound of the log-likelihood of P(Y|X)
-        """
-
-        # Expected shape of ref labels (segm) : [B x n_annotations x n_tasks x 2 x h x w]
-        n_tasks = segm.shape[2]
-        n_annotations = segm.shape[1]
-
-        if n_tasks == 1:
-            criterion = nn.CrossEntropyLoss(weight=class_weight) # Softmax + NLL
-        else:
-            criterion = nn.BCEWithLogitsLoss() # Sigmoid + BCE (per-task)
-
-        kl_loss = 0
-        reconstruction_loss = 0
-
-        # Number of samples generated == number of annotations for the image (so we learn all the modes)
-        for anno in range(n_annotations):
-
-            # The posterior latent space is generated by the mean segmentation over annotations!
-            # We assume samples from the posterior will learn to approximate the "modes" of the labels
-            if train is True:
-                z_posterior = self.posterior_latent_space.rsample()
-
-                # KL-divergence between z_prior and z_posterior
-                # Mean over the batch
-                kl_loss += torch.mean(self.kl_divergence())
-
-                # Output generated from the posterior
-                reconstruction = self.reconstruct(use_posterior_mean=False,
-                                                  z=z_posterior)
-
-            else: # For validation loss, sample from z_prior i.e. the latent space conditioned only on the data
-                z_prior = self.prior_latent_space.rsample()
-                reconstruction = self.reconstruct(use_posterior_mean=False,
-                                                  z=z_prior)
-
-            for task in range(n_tasks):
-                if n_tasks == 1:
-                    reconstruction_loss += criterion(input=reconstruction,
-                                                     target=torch.argmax(segm[:, anno, task, ...], dim=1))
-                else:
-                    reconstruction_loss += criterion(input=reconstruction[:, task, ...],
-                                                     target=segm[:, anno, task, ...])
-
-
-        reconstruction_loss = reconstruction_loss/(n_annotations*n_tasks)
-        kl_loss = kl_loss/n_annotations
-
-
-        loss_dict = {}
-        loss_dict['loss'] = (reconstruction_loss + self.beta*kl_loss)
-
-        loss_dict['reconstruction'] = reconstruction_loss
-        loss_dict['kl'] = kl_loss
-
-
-        return loss_dict
-
+        z_sample = z_dist.rsample()
+        return self.fcomb.forward(unet_features, z_sample)

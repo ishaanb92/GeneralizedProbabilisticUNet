@@ -449,7 +449,7 @@ class ProbabilisticUnet(nn.Module):
         # 1x1 convolutions to merge samples from the posterior into the decoder output
         self.fcomb = Fcomb(self.num_filters, self.latent_dim, self.input_channels, self.num_classes, self.no_convs_fcomb, {'w':'orthogonal', 'b':'normal'}, use_tile=True)
 
-    def forward(self, patch, segm, training=True, one_hot=True):
+    def forward(self, patch, segm, training=True, one_hot=True, mc_samples=100):
         """
         Construct prior latent space for patch and run patch through UNet,
         in case training is True also construct posterior latent space
@@ -471,19 +471,50 @@ class ProbabilisticUnet(nn.Module):
             # Create a label prediction by merging the unet_features and a sample from the posterior (at test-time)
             reconstruction = self.sample(unet_features=unet_features,
                                          z_dist=prior_latent_space)
-        output = {}
-        output['reconstruction'] = reconstruction
-        output['unet_features'] = unet_features
 
         # Save the distribution so that we can use it to compute the KL-term in the ELBO
         if training:
-            output['posterior_dist'] = posterior_latent_space
+            kld = self.compute_kl_divergence(posterior_dist=posterior_latent_space,
+                                             prior_dist=prior_latent_space,
+                                             mc_samples=mc_samples)
+            kld = torch.mean(kld)
         else:
-            output['posterior_dist'] = None
+            kld = 0.0
 
-        output['prior_dist'] = prior_latent_space
+        return (reconstruction, unet_features, kld)
 
-        return output
+    @staticmethod
+    def compute_kl_divergence(posterior_dist, prior_dist, mc_samples=100):
+        """
+        Calculate the KL divergence between the posterior and prior KL(Q||P)
+        analytic: calculate KL analytically or via sampling from the posterior
+        calculate_posterior: if we use samapling to approximate KL we can sample here or supply a sample
+        """
+
+        try:
+            #Neeed to add this to torch source code, see: https://github.com/pytorch/pytorch/issues/13545
+            kl_div = kl.kl_divergence(posterior_dist,
+                                      prior_dist)
+
+        except NotImplementedError:
+            # If the analytic KL divergence does not exists, use MC-approximation
+            # See: 'APPROXIMATING THE KULLBACK LEIBLER DIVERGENCE BETWEEN GAUSSIAN MIXTURE MODELS' by Hershey and Olsen (2007)
+
+            monte_carlo_terms = torch.zeros(size=(mc_samples, posterior_dist.batch_shape[0]),
+                                                  dtype=torch.float32,
+                                                  device=posterior_dist.rsample().device)
+
+            # MC approximation of KL(q(z|x, y) || p(z|x)) = 1/N(\Sigma log(q(z) - log(p(z)))), z ~ q(z|x, y)
+            for mc_iter in range(mc_samples):
+                posterior_sample = posterior_dist.rsample()
+                log_posterior_prob = posterior_dist.log_prob(posterior_sample)
+                log_prior_prob = prior_dist.log_prob(posterior_sample)
+                monte_carlo_terms[mc_iter, :] = log_posterior_prob - log_prior_prob
+
+            # MC-approximation
+            kl_div = torch.mean(monte_carlo_terms, dim=0)
+
+        return kl_div
 
     # Sampling function that is used during training and testing
     # Uses the u_net features computed in the forward() call

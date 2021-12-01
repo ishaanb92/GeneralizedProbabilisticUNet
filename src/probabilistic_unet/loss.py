@@ -25,44 +25,8 @@ class ELBOLoss(nn.Module):
 
         self.beta = beta
 
-    def compute_kl_divergence(self, posterior_dist, prior_dist):
-        """
-        Calculate the KL divergence between the posterior and prior KL(Q||P)
-        analytic: calculate KL analytically or via sampling from the posterior
-        calculate_posterior: if we use samapling to approximate KL we can sample here or supply a sample
-        """
 
-        try:
-            #Neeed to add this to torch source code, see: https://github.com/pytorch/pytorch/issues/13545
-            kl_div = kl.kl_divergence(posterior_dist,
-                                      prior_dist)
-
-        except NotImplementedError:
-            # If the analytic KL divergence does not exists, use MC-approximation
-            # See: 'APPROXIMATING THE KULLBACK LEIBLER DIVERGENCE BETWEEN GAUSSIAN MIXTURE MODELS' by Hershey and Olsen (2007)
-
-            monte_carlo_terms = torch.zeros(size=(mc_samples, posterior_dist.batch_shape[0]),
-                                                  dtype=torch.float32,
-                                                  device=posterior_dist.rsample().device)
-
-            # MC approximation of KL(q(z|x, y) || p(z|x)) = 1/N(\Sigma log(q(z) - log(p(z)))), z ~ q(z|x, y)
-            for mc_iter in range(self.mc_samples):
-                posterior_sample = posterior_dist.rsample()
-                log_posterior_prob = posterior_dist.log_prob(posterior_sample)
-                log_prior_prob = prior_dist.log_prob(posterior_sample)
-                monte_carlo_terms[mc_iter, :] = log_posterior_prob - log_prior_prob
-
-            # MC-approximation
-            kl_div = torch.mean(monte_carlo_terms, dim=0)
-
-        return kl_div
-
-    def forward(self, input=None, target=None, prior_dist=None, posterior_dist=None):
-
-        if prior_dist is not None:
-            kl_loss = torch.mean(self.compute_kl_divergence(posterior_dist, prior_dist))
-        else:
-            kl_loss = 0.0
+    def forward(self, input=None, target=None, kld=0.0):
 
         n_tasks = target.shape[1]
 
@@ -79,8 +43,8 @@ class ELBOLoss(nn.Module):
             recon_loss = recon_loss/n_tasks
 
         loss = {}
-        loss['loss'] = recon_loss + self.beta*kl_loss
-        loss['kl'] = kl_loss
+        loss['loss'] = recon_loss + self.beta*kld
+        loss['kl'] = kld
         loss['reconstruction'] = recon_loss
 
         return loss

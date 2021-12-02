@@ -58,6 +58,7 @@ class MixtureOfGaussians(MixtureSameFamily, Distribution):
                               event_shape=event_shape,
                               validate_args=validate_args)
 
+    # TODO: Support batched sampling!
     def rsample(self, sample_shape=torch.Size()):
 
         # Shape : [B, n_components]

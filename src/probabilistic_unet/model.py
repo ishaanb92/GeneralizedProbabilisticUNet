@@ -128,6 +128,7 @@ class AxisAlignedConvGaussian(nn.Module):
         for mix_component, conv_op in enumerate(self.conv_layer):
 
             mu_log_sigma = conv_op(encoding)
+
             #We squeeze the second dimension twice, since otherwise it won't work when batch size is equal to 1
             mu_log_sigma = torch.squeeze(mu_log_sigma, dim=2)
             mu_log_sigma = torch.squeeze(mu_log_sigma, dim=2)
@@ -456,32 +457,30 @@ class ProbabilisticUnet(nn.Module):
         """
         # Get the distribution(s)
         if training:
-            posterior_latent_space = self.posterior.forward(patch, segm, one_hot=one_hot)
+            self.posterior_latent_space = self.posterior.forward(patch, segm, one_hot=one_hot)
 
-        prior_latent_space = self.prior.forward(patch)
+        self.prior_latent_space = self.prior.forward(patch)
 
         # Get the U-net features
-        unet_features = self.unet.forward(patch,False)
+        self.unet_features = self.unet.forward(patch,False)
 
         if training:
             # Create a label prediction by merging the unet_features and a sample from the posterior
-            reconstruction = self.sample(unet_features=unet_features,
-                                         z_dist=posterior_latent_space)
+            reconstruction = self.sample(mode='posterior')
         else:
             # Create a label prediction by merging the unet_features and a sample from the posterior (at test-time)
-            reconstruction = self.sample(unet_features=unet_features,
-                                         z_dist=prior_latent_space)
+            reconstruction = self.sample(mode='prior')
 
         # Save the distribution so that we can use it to compute the KL-term in the ELBO
         if training:
-            kld = self.compute_kl_divergence(posterior_dist=posterior_latent_space,
-                                             prior_dist=prior_latent_space,
+            kld = self.compute_kl_divergence(posterior_dist=self.posterior_latent_space,
+                                             prior_dist=self.prior_latent_space,
                                              mc_samples=mc_samples)
             kld = torch.mean(kld)
         else:
             kld = 0.0
 
-        return (reconstruction, unet_features, kld)
+        return (reconstruction, kld)
 
     @staticmethod
     def compute_kl_divergence(posterior_dist, prior_dist, mc_samples=100):
@@ -519,10 +518,14 @@ class ProbabilisticUnet(nn.Module):
     # Sampling function that is used during training and testing
     # Uses the u_net features computed in the forward() call
     # Only the fcomb.forward() is run again
-    def sample(self, unet_features=None, z_dist=None):
+    def sample(self, mode='prior'):
         """
         Sample from the prior latent space. Used in inference!
 
         """
-        z_sample = z_dist.rsample()
-        return self.fcomb.forward(unet_features, z_sample)
+        if mode == 'prior':
+            z_sample = self.prior_latent_space.rsample()
+        elif mode == 'posterior':
+            z_sample = self.posterior_latent_space.rsample()
+
+        return self.fcomb.forward(self.unet_features, z_sample)

@@ -484,6 +484,16 @@ class ProbabilisticUnet(nn.Module):
 
         return (reconstruction, kld)
 
+    # DEBUG function (Can be called only after a call to model.forward())
+    def get_latent_space_distribution(self, mode='prior'):
+        if mode == 'prior':
+            return self.prior_latent_space
+        elif mode == 'posterior':
+            return self.posterior_latent_space
+        else:
+            raise RuntimeError('Invalid mode {}'.format(mode))
+
+
     @staticmethod
     def compute_kl_divergence(posterior_dist, prior_dist, mc_samples=100):
         """

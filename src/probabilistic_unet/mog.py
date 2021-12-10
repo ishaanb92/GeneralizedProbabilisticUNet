@@ -58,7 +58,6 @@ class MixtureOfGaussians(MixtureSameFamily, Distribution):
                               event_shape=event_shape,
                               validate_args=validate_args)
 
-    # TODO: Support batched sampling!
     def rsample(self, sample_shape=torch.Size()):
 
         # Shape : [B, n_components]
@@ -87,7 +86,7 @@ class MixtureOfGaussians(MixtureSameFamily, Distribution):
         # apart from the "selected" mixture component
         # So by summing along the columns, we recover the
         # sample from the "winning" Gaussian
-        samples = torch.sum(samples, dim=1)
+        samples = torch.sum(samples, dim=-2)
 
         return samples
 

@@ -58,7 +58,7 @@ class MixtureOfGaussians(MixtureSameFamily, Distribution):
                               event_shape=event_shape,
                               validate_args=validate_args)
 
-    def rsample(self, sample_shape=torch.Size()):
+    def rsample(self, sample_shape=torch.Size(), show_indices=False):
 
         # Shape : [B, n_components]
         mix_sample = self.mixture_distribution.rsample(sample_shape)
@@ -88,7 +88,11 @@ class MixtureOfGaussians(MixtureSameFamily, Distribution):
         # sample from the "winning" Gaussian
         samples = torch.sum(samples, dim=-2)
 
-        return samples
+        if show_indices is False:
+            return samples
+        else:
+            return torch.cat([samples, index], dim=-1)
+
 
 
 

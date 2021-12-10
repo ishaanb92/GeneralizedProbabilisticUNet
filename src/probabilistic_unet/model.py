@@ -224,8 +224,10 @@ class LowRankCovConvGaussian(nn.Module):
             self.show_seg = segm
 
             if one_hot is True:
+                segm = torch.squeeze(segm, dim=2) # Get rid of the task axis
                 input = torch.cat((input, segm[:, :, 1, ...]), dim=1)
             else:
+                segm = torch.flatten(segm, start_dim=1, end_dim=2)
                 input = torch.cat((input, segm), dim=1)
 
             self.show_concat = input

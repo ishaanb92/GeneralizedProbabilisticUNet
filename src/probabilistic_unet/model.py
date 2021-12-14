@@ -70,10 +70,11 @@ class AxisAlignedConvGaussian(nn.Module):
             self.name = 'Prior'
 
 
+        self.encoder = Encoder(self.input_channels, label_channels, self.num_filters, self.no_convs_per_block, initializers, posterior=self.posterior)
+
         self.conv_layer = nn.Conv2d(num_filters[-1], 2 * self.n_components*self.latent_dim, (1,1), stride=1)
         nn.init.kaiming_normal_(self.conv_layer.weight, mode='fan_in', nonlinearity='relu')
         nn.init.normal_(self.conv_layer.bias)
-        self.encoder = Encoder(self.input_channels, label_channels, self.num_filters, self.no_convs_per_block, initializers, posterior=self.posterior)
 
         # 1x1 convolution to compute logits to parametrize the mixture distribution
         if self.n_components > 1:
@@ -143,6 +144,7 @@ class LowRankCovConvGaussian(nn.Module):
     """
     A convolutional net that parametrizes a Gaussian distribution with low-rank approximation of covariance matrix.
     """
+
     def __init__(self, input_channels, label_channels, num_filters, no_convs_per_block, latent_dim, initializers, posterior=False, rank=1, n_components=1, temperature=0.1):
         super(LowRankCovConvGaussian, self).__init__()
         self.input_channels = input_channels
@@ -452,20 +454,6 @@ class ProbabilisticUnet(nn.Module):
             # If the analytic KL divergence does not exists, use MC-approximation
             # See: 'APPROXIMATING THE KULLBACK LEIBLER DIVERGENCE BETWEEN GAUSSIAN MIXTURE MODELS' by Hershey and Olsen (2007)
 
-#            monte_carlo_terms = torch.zeros(size=(mc_samples, posterior_dist.batch_shape[0]),
-#                                                  dtype=torch.float32,
-#                                            device=posterior_dist.rsample().device,
-#                                            requires_grad=True
-#                                            )
-#
-#            # MC approximation of KL(q(z|x, y) || p(z|x)) = 1/N(\Sigma log(q(z) - log(p(z)))), z ~ q(z|x, y)
-#            for mc_iter in range(mc_samples):
-#                posterior_sample = posterior_dist.rsample()
-#                log_posterior_prob = posterior_dist.log_prob(posterior_sample)
-#                log_prior_prob = prior_dist.log_prob(posterior_sample)
-#                with torch.no_grad():
-#                    monte_carlo_terms[mc_iter, :] = log_posterior_prob - log_prior_prob
-#
             # MC-approximation
             posterior_samples = posterior_dist.rsample(sample_shape=torch.Size([mc_samples]))
             log_posterior_prob = posterior_dist.log_prob(posterior_samples)

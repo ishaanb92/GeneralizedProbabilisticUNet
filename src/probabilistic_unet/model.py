@@ -218,9 +218,12 @@ class LowRankCovConvGaussian(nn.Module):
         cov_factor = cov_factor.view(cov_factor.shape[0], self.n_components, self.latent_dim, self.rank)
 
         if self.n_components == 1:
-            dist = LowRankMultivariateNormal(loc=mu_log_sigma[:, :, :self.latent_dim].squeeze(dim=1),
-                                             cov_factor=cov_factor.squeeze(dim=1),
-                                             cov_diag=torch.exp(mu_log_sigma[:, :, self.latent_dim:].squeeze(dim=1)))
+            cov_factor = cov_factor.squeeze(dim=1)
+            mu_log_sigma = mu_log_sigma.squeeze(dim=1)
+
+            dist = LowRankMultivariateNormal(loc=mu_log_sigma[:, :self.latent_dim],
+                                             cov_factor=cov_factor,
+                                             cov_diag=torch.exp(mu_log_sigma[:, self.latent_dim:]))
         else:
             logits = self.mixture_weights_conv(encoding) # Shape : [batch_size, n_components, 1, 1]
             logits = torch.squeeze(logits, dim=-1)
@@ -395,7 +398,7 @@ class ProbabilisticUnet(nn.Module):
         # 1x1 convolutions to merge samples from the posterior into the decoder output
         self.fcomb = Fcomb(self.num_filters, self.latent_dim, self.input_channels, self.num_classes, self.no_convs_fcomb, {'w':'orthogonal', 'b':'normal'}, use_tile=True)
 
-    def forward(self, patch, segm, training=True, one_hot=True, mc_samples=100):
+    def forward(self, patch, segm, training=True, one_hot=True, mc_samples=1000):
         """
         Construct prior latent space for patch and run patch through UNet,
         in case training is True also construct posterior latent space

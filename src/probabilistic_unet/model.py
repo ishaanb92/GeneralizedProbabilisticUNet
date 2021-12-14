@@ -69,12 +69,11 @@ class AxisAlignedConvGaussian(nn.Module):
         else:
             self.name = 'Prior'
 
-        self.conv_layer = nn.ModuleList()
 
+        self.conv_layer = nn.Conv2d(num_filters[-1], 2 * self.n_components*self.latent_dim, (1,1), stride=1)
+        nn.init.kaiming_normal_(self.conv_layer.weight, mode='fan_in', nonlinearity='relu')
+        nn.init.normal_(self.conv_layer.bias)
         self.encoder = Encoder(self.input_channels, label_channels, self.num_filters, self.no_convs_per_block, initializers, posterior=self.posterior)
-
-        for mix_component in range(self.n_components):
-            self.conv_layer.append(nn.Conv2d(num_filters[-1], 2 * self.latent_dim, (1,1), stride=1))
 
         # 1x1 convolution to compute logits to parametrize the mixture distribution
         if self.n_components > 1:
@@ -86,10 +85,6 @@ class AxisAlignedConvGaussian(nn.Module):
         self.show_enc = 0
         self.sum_input = 0
 
-        # Initialize convolution layers
-        for conv_op in self.conv_layer:
-            nn.init.kaiming_normal_(conv_op.weight, mode='fan_in', nonlinearity='relu')
-            nn.init.normal_(conv_op.bias)
 
     def forward(self, input, segm=None, one_hot=True):
 
@@ -115,35 +110,18 @@ class AxisAlignedConvGaussian(nn.Module):
         encoding = torch.mean(encoding, dim=2, keepdim=True)
         encoding = torch.mean(encoding, dim=3, keepdim=True)
 
-        # Initialize empty tensors to hold mean(s) and log-sigma(s)
-        mu = torch.zeros(size=(encoding.shape[0], self.n_components, self.latent_dim),
-                         dtype=encoding.dtype,
-                         device=encoding.device)
+        mu_log_sigma = self.conv_layer(encoding)
 
-        log_sigma = torch.zeros(size=(encoding.shape[0], self.n_components, self.latent_dim),
-                                dtype=encoding.dtype,
-                                device=encoding.device)
+        #We squeeze the second dimension twice, since otherwise it won't work when batch size is equal to 1
+        mu_log_sigma = torch.squeeze(mu_log_sigma, dim=2)
+        mu_log_sigma = torch.squeeze(mu_log_sigma, dim=2)
 
-        #Convert encoding to 2 x latent dim and split up for mu and log_sigma
-        for mix_component, conv_op in enumerate(self.conv_layer):
+        mu_log_sigma = mu_log_sigma.view(mu_log_sigma.shape[0], self.n_components, 2*self.latent_dim)
 
-            mu_log_sigma = conv_op(encoding)
-
-            #We squeeze the second dimension twice, since otherwise it won't work when batch size is equal to 1
-            mu_log_sigma = torch.squeeze(mu_log_sigma, dim=2)
-            mu_log_sigma = torch.squeeze(mu_log_sigma, dim=2)
-
-            mu[:, mix_component, :] = mu_log_sigma[:, :self.latent_dim]
-            log_sigma[:, mix_component, :] = mu_log_sigma[:, self.latent_dim:]
-
-        #This is a multivariate normal with diagonal covariance matrix sigma
-        #https://github.com/pytorch/pytorch/pull/11178
-        # Define the torch.distribution so that samples can be generated!
         if self.n_components == 1:
-            dist = Independent(Normal(loc=mu.squeeze(dim=1),
-                                      scale=torch.exp(log_sigma.squeeze(dim=1))),1)
+            dist = Independent(Normal(loc=mu_log_sigma[:, :, :self.latent_dim].squeeze(dim=1),
+                                      scale=torch.exp(mu_log_sigma[:, :, self.latent_dim:].squeeze(dim=1))),1)
         else:
-            # TODO: Understand the temperature parameter and maybe include it in the hyper-parameter optimization!
             logits = self.mixture_weights_conv(encoding) # Shape : [batch_size, n_components, 1, 1]
             logits = torch.squeeze(logits, dim=-1)
             logits = torch.squeeze(logits, dim=-1)
@@ -151,7 +129,7 @@ class AxisAlignedConvGaussian(nn.Module):
             cat_distribution = RelaxedOneHotCategorical(logits=logits,
                                                         temperature=torch.Tensor([self.temperature]).to(logits.device))
 
-            comp_distribution = Independent(Normal(loc=mu, scale=torch.exp(log_sigma)), 1)
+            comp_distribution = Independent(Normal(loc=mu_log_sigma[:, :, :self.latent_dim], scale=torch.exp(mu_log_sigma[:, :, self.latent_dim:])), 1)
 
             # Create a GMM
             dist = MixtureOfGaussians(mixture_distribution=cat_distribution,
@@ -186,14 +164,14 @@ class LowRankCovConvGaussian(nn.Module):
 
 
         # Low-rank approximation via covariance factors
-        self.mean_op = nn.ModuleList()
-        self.log_cov_diag_op = nn.ModuleList()
-        self.cov_factor_op = nn.ModuleList()
+        self.mean_log_sigma_op = nn.Conv2d(num_filters[-1], self.n_components*2*self.latent_dim, (1, 1), stride=1)
+        self.cov_factor_op = nn.Conv2d(num_filters[-1], self.n_components*self.latent_dim*self.rank, (1, 1), stride=1)
 
-        for mix_component in range(n_components):
-            self.mean_op.append(nn.Conv2d(num_filters[-1], self.latent_dim, (1, 1), stride=1))
-            self.log_cov_diag_op.append(nn.Conv2d(num_filters[-1], self.latent_dim, (1, 1), stride=1))
-            self.cov_factor_op.append(nn.Conv2d(num_filters[-1], self.latent_dim*self.rank, (1, 1), stride=1))
+        nn.init.kaiming_normal_(self.mean_log_sigma_op.weight, mode='fan_in', nonlinearity='relu')
+        nn.init.normal_(self.mean_log_sigma_op.bias)
+
+        nn.init.kaiming_normal_(self.cov_factor_op.weight, mode='fan_in', nonlinearity='relu')
+        nn.init.normal_(self.cov_factor_op.bias)
 
         if self.n_components > 1:
             self.mixture_weights_conv = nn.Conv2d(num_filters[-1], self.n_components, (1, 1), stride=1)
@@ -203,18 +181,6 @@ class LowRankCovConvGaussian(nn.Module):
         self.show_concat = 0
         self.show_enc = 0
         self.sum_input = 0
-
-        # Initialize parameters
-
-        for mean, log_cov_diag, cov_factor in zip(self.mean_op, self.log_cov_diag_op, self.cov_factor_op):
-            nn.init.kaiming_normal_(mean.weight, mode='fan_in', nonlinearity='relu')
-            nn.init.normal_(mean.bias)
-
-            nn.init.kaiming_normal_(log_cov_diag.weight, mode='fan_in', nonlinearity='relu')
-            nn.init.normal_(log_cov_diag.bias)
-
-            nn.init.kaiming_normal_(cov_factor.weight, mode='fan_in', nonlinearity='relu')
-            nn.init.normal_(cov_factor.bias)
 
     def forward(self, input, segm=None, one_hot=True):
 
@@ -241,44 +207,19 @@ class LowRankCovConvGaussian(nn.Module):
                               dim=(2, 3),
                               keepdim=True)
 
-        mu_mixture = torch.zeros(size=(encoding.shape[0], self.n_components, self.latent_dim),
-                                 dtype=encoding.dtype,
-                                 device=encoding.device)
+        mu_log_sigma = self.mean_log_sigma_op(encoding)
+        mu_log_sigma = mu_log_sigma.squeeze(dim=-1).squeeze(dim=-1)
+        mu_log_sigma = mu_log_sigma.view(mu_log_sigma.shape[0], self.n_components, 2*self.latent_dim)
 
-        cov_diag_mixture = torch.zeros(size=(encoding.shape[0], self.n_components, self.latent_dim),
-                                       dtype=encoding.dtype,
-                                       device=encoding.device)
-
-        cov_factor_mixture = torch.zeros(size=(encoding.shape[0], self.n_components, self.latent_dim, self.rank),
-                                         dtype=encoding.dtype,
-                                         device=encoding.device)
-
-        for mix_component, (mean, log_cov_diag, cov_factor) in enumerate(zip(self.mean_op, self.log_cov_diag_op, self.cov_factor_op)):
-            mu = mean(encoding)
-            mu = torch.squeeze(mu, dim=-1)
-            mu = torch.squeeze(mu, dim=-1)
-            mu_mixture[:, mix_component, ...] = mu
-
-            cov_diag = log_cov_diag(encoding)
-            cov_diag = torch.squeeze(cov_diag, dim=-1)
-            cov_diag = torch.squeeze(cov_diag, dim=-1)
-            cov_diag = torch.exp(cov_diag)
-            cov_diag_mixture[:, mix_component, ...] = cov_diag
-
-            cov_factor = cov_factor(encoding)
-            cov_factor = torch.squeeze(cov_factor, dim=-1)
-            cov_factor = torch.squeeze(cov_factor, dim=-1)
-            # Change view to get the shape: [batch size, self.latent_dim, self.rank]
-            cov_factor = cov_factor.view(cov_factor.shape[0], self.latent_dim, self.rank)
-            cov_factor_mixture[:, mix_component, ...] = cov_factor
-
+        cov_factor = self.cov_factor_op(encoding)
+        cov_factor = cov_factor.squeeze(dim=-1).squeeze(dim=-1)
+        cov_factor = cov_factor.view(cov_factor.shape[0], self.n_components, self.latent_dim, self.rank)
 
         if self.n_components == 1:
-            dist = LowRankMultivariateNormal(loc=mu_mixture.squeeze(dim=1),
-                                             cov_factor=cov_factor_mixture.squeeze(dim=1),
-                                             cov_diag=cov_diag_mixture.squeeze(dim=1))
+            dist = LowRankMultivariateNormal(loc=mu_log_sigma[:, :, :self.latent_dim].squeeze(dim=1),
+                                             cov_factor=cov_factor.squeeze(dim=1),
+                                             cov_diag=torch.exp(mu_log_sigma[:, :, self.latent_dim:].squeeze(dim=1)))
         else:
-            # TODO: Understand the temperature parameter and maybe include it in the hyper-parameter optimization!
             logits = self.mixture_weights_conv(encoding) # Shape : [batch_size, n_components, 1, 1]
             logits = torch.squeeze(logits, dim=-1)
             logits = torch.squeeze(logits, dim=-1)
@@ -286,9 +227,9 @@ class LowRankCovConvGaussian(nn.Module):
             cat_distribution = RelaxedOneHotCategorical(logits=logits,
                                                         temperature=torch.Tensor([self.temperature]).to(logits.device))
 
-            comp_distribution = LowRankMultivariateNormal(loc=mu_mixture,
-                                                          cov_factor=cov_factor_mixture,
-                                                          cov_diag=cov_diag_mixture)
+            comp_distribution = LowRankMultivariateNormal(loc=mu_log_sigma[:, :, :self.latent_dim],
+                                                          cov_factor=cov_factor,
+                                                          cov_diag=torch.exp(mu_log_sigma[:, :, self.latent_dim:]))
             # Create a GMM
             dist = MixtureOfGaussians(mixture_distribution=cat_distribution,
                                       component_distribution=comp_distribution)
@@ -511,18 +452,25 @@ class ProbabilisticUnet(nn.Module):
             # If the analytic KL divergence does not exists, use MC-approximation
             # See: 'APPROXIMATING THE KULLBACK LEIBLER DIVERGENCE BETWEEN GAUSSIAN MIXTURE MODELS' by Hershey and Olsen (2007)
 
-            monte_carlo_terms = torch.zeros(size=(mc_samples, posterior_dist.batch_shape[0]),
-                                                  dtype=torch.float32,
-                                                  device=posterior_dist.rsample().device)
-
-            # MC approximation of KL(q(z|x, y) || p(z|x)) = 1/N(\Sigma log(q(z) - log(p(z)))), z ~ q(z|x, y)
-            for mc_iter in range(mc_samples):
-                posterior_sample = posterior_dist.rsample()
-                log_posterior_prob = posterior_dist.log_prob(posterior_sample)
-                log_prior_prob = prior_dist.log_prob(posterior_sample)
-                monte_carlo_terms[mc_iter, :] = log_posterior_prob - log_prior_prob
-
+#            monte_carlo_terms = torch.zeros(size=(mc_samples, posterior_dist.batch_shape[0]),
+#                                                  dtype=torch.float32,
+#                                            device=posterior_dist.rsample().device,
+#                                            requires_grad=True
+#                                            )
+#
+#            # MC approximation of KL(q(z|x, y) || p(z|x)) = 1/N(\Sigma log(q(z) - log(p(z)))), z ~ q(z|x, y)
+#            for mc_iter in range(mc_samples):
+#                posterior_sample = posterior_dist.rsample()
+#                log_posterior_prob = posterior_dist.log_prob(posterior_sample)
+#                log_prior_prob = prior_dist.log_prob(posterior_sample)
+#                with torch.no_grad():
+#                    monte_carlo_terms[mc_iter, :] = log_posterior_prob - log_prior_prob
+#
             # MC-approximation
+            posterior_samples = posterior_dist.rsample(sample_shape=torch.Size([mc_samples]))
+            log_posterior_prob = posterior_dist.log_prob(posterior_samples)
+            log_prior_prob = prior_dist.log_prob(posterior_samples)
+            monte_carlo_terms = log_posterior_prob - log_prior_prob
             kl_div = torch.mean(monte_carlo_terms, dim=0)
 
         return kl_div

@@ -72,7 +72,6 @@ class MixtureOfGaussians(MixtureSameFamily, Distribution):
         # See: E. Jang, S. Gu, and B. Poole. Categorical Reparameterization with Gumbel-Softmax (2017), ICLR 2017
         # In the forward-pass, we get the one-hot vector (the actual sample cancels out) and in the backward pass
         # argmax does not have a contribute to the gradient but mix_sample does!
-        # TODO: Verify gradient flow!!
         index = mix_sample.max(dim=-1, keepdim=True)[1]
         sample_mask = torch.zeros_like(mix_sample).scatter_(-1, index, 1.0)
 

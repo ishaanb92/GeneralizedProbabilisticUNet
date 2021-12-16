@@ -58,6 +58,9 @@ class MixtureOfGaussians(MixtureSameFamily, Distribution):
                               event_shape=event_shape,
                               validate_args=validate_args)
 
+    def get_mixture_distribution(self):
+        return self.mixture_distribution
+
     def rsample(self, sample_shape=torch.Size(), show_indices=False):
 
         # Shape : [B, n_components]

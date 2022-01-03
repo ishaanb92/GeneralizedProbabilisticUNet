@@ -94,10 +94,7 @@ class AxisAlignedConvGaussian(nn.Module):
             self.show_img = input
             self.show_seg = segm
 
-            if one_hot is True:
-                input = torch.cat((input, segm[:, :, 1, ...]), dim=1)
-            else:
-                input = torch.cat((input, segm), dim=1)
+            input = torch.cat((input, segm), dim=1)
 
             self.show_concat = input
             self.sum_input = torch.sum(input)

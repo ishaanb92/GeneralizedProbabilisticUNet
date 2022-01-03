@@ -6,8 +6,6 @@ Email: ishaan@isi.uu.nl
 """
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torch.distributions import kl
 
 class ELBOLoss(nn.Module):
 
@@ -17,12 +15,7 @@ class ELBOLoss(nn.Module):
 
         self.mc_samples = mc_samples
         self.mode = mode
-
-        if mode == 'ce':
-            self.criterion = nn.CrossEntropyLoss(weight=class_weight)
-        elif mode == 'bce':
-            self.criterion = nn.BCEWithLogitsLoss()
-
+        self.criterion = nn.BCEWithLogitsLoss()
         self.beta = beta
 
 
@@ -30,17 +23,12 @@ class ELBOLoss(nn.Module):
 
         n_tasks = target.shape[1]
 
-        if self.mode == 'ce':
-            target = torch.squeeze(target, dim=1)
-            recon_loss = self.criterion(input=input,
-                                        target=torch.argmax(target, dim=1))
-        else:
-            recon_loss = 0.0
-            for task_id in range(n_tasks):
-                recon_loss += self.criterion(input=input[:, task_id, ...],
-                                             target=target[:, task_id, ...])
+        recon_loss = 0.0
+        for task_id in range(n_tasks):
+            recon_loss += self.criterion(input=input[:, task_id, ...],
+                                         target=target[:, task_id, ...])
 
-            recon_loss = recon_loss/n_tasks
+        recon_loss = recon_loss/n_tasks
 
         loss = {}
         loss['loss'] = recon_loss + self.beta*kld

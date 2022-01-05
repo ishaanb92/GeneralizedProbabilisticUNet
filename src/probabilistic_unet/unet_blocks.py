@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from torch.autograd import Variable
 import numpy as np
-from utils_cflow.utils import init_weights
+from .utils import init_weights
 import pdb
 class DownConvBlock(nn.Module):
     """

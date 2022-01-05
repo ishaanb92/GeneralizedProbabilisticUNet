@@ -1,4 +1,4 @@
-from models.unet_blocks import *
+from .unet_blocks import *
 import torch.nn.functional as F
 import pdb
 

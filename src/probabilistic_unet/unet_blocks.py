@@ -2,75 +2,49 @@ import torch
 import torch.nn as nn
 from torch.autograd import Variable
 import numpy as np
-from .utils import init_weights
-
+from utils_cflow.utils import init_weights
+import pdb
 class DownConvBlock(nn.Module):
     """
     A block of three convolutional layers where each layer is followed by a non-linear activation function
     Between each block we add a pooling operation.
     """
-    def __init__(self, input_dim, output_dim, initializers, padding, pool=True, dropout=False, dropout_rate=0.5):
+    def __init__(self, input_dim, output_dim, initializers, padding, pool=True,norm=False):
         super(DownConvBlock, self).__init__()
         layers = []
-
-        self.dropout = dropout
 
         if pool:
             layers.append(nn.AvgPool2d(kernel_size=2, stride=2, padding=0, ceil_mode=True))
 
         layers.append(nn.Conv2d(input_dim, output_dim, kernel_size=3, stride=1, padding=int(padding)))
         layers.append(nn.ReLU(inplace=True))
-
+        layers.append(nn.Conv2d(output_dim, output_dim, kernel_size=3, stride=1, padding=int(padding)))
+        layers.append(nn.ReLU(inplace=True))
         layers.append(nn.Conv2d(output_dim, output_dim, kernel_size=3, stride=1, padding=int(padding)))
         layers.append(nn.ReLU(inplace=True))
 
-        layers.append(nn.Conv2d(output_dim, output_dim, kernel_size=3, stride=1, padding=int(padding)))
-
-        if dropout is True:
-            layers.append(nn.Dropout2d(p=dropout_rate))
-
-        layers.append(nn.ReLU(inplace=True))
-
+        if norm:
+            layers.append(nn.BatchNorm2d(output_dim))
         self.layers = nn.Sequential(*layers)
 
         self.layers.apply(init_weights)
 
-    # Return weights and biases to be used later in L2-regularization of MC-Dropout2d layers
-    # FIXME: This needs to removed. Weight decay term in the loss function is over ALL weights and biases. See Appendix of Gal and Ghahramani (2015) or Y.Gal PhD thesis (Chapter 6)
-    def get_conv_params(self):
-        params = []
-
-        # Since dropout is performed only at encoder output, add only the weights of the last convolution
-        for m in reversed(self.layers):
-            if type(m) == nn.Conv2d:
-                params.append(m.weight)
-                params.append(m.bias)
-                break
-
-        if self.dropout is True:
-            assert(len(params) == 2)
-
-        return params
-
-
     def forward(self, patch):
         return self.layers(patch)
-
 
 class UpConvBlock(nn.Module):
     """
     A block consists of an upsampling layer followed by a convolutional layer to reduce the amount of channels and then a DownConvBlock
     If bilinear is set to false, we do a transposed convolution instead of upsampling
     """
-    def __init__(self, input_dim, output_dim, initializers, padding, bilinear=True, dropout=False, dropout_rate=0.5):
+    def __init__(self, input_dim, output_dim, initializers, padding, bilinear=True,norm=False):
         super(UpConvBlock, self).__init__()
         self.bilinear = bilinear
-
         if not self.bilinear:
             self.upconv_layer = nn.ConvTranspose2d(input_dim, output_dim, kernel_size=2, stride=2)
             self.upconv_layer.apply(init_weights)
-
-        self.conv_block = DownConvBlock(input_dim, output_dim, initializers, padding, pool=False, dropout=dropout, dropout_rate=dropout_rate)
+#        pdb.set_trace()
+        self.conv_block = DownConvBlock(input_dim, output_dim, initializers, padding, pool=False,norm=norm)
 
     def forward(self, x, bridge):
         if self.bilinear:
@@ -83,7 +57,3 @@ class UpConvBlock(nn.Module):
         out =  self.conv_block(out)
 
         return out
-
-    def get_conv_params(self):
-        return self.conv_block.get_conv_params()
-

@@ -1,5 +1,6 @@
-from .unet_blocks import *
+from models.unet_blocks import *
 import torch.nn.functional as F
+import pdb
 
 class Unet(nn.Module):
     """
@@ -11,7 +12,7 @@ class Unet(nn.Module):
     padidng: Boolean, if true we pad the images with 1 so that we keep the same dimensions
     """
 
-    def __init__(self, input_channels, num_classes, num_filters, initializers, apply_last_layer=True, padding=True, mc_dropout=False, dropout_rate=0.5):
+    def __init__(self, input_channels, num_classes, num_filters, initializers, apply_last_layer=True, padding=True,norm=False):
         super(Unet, self).__init__()
         self.input_channels = input_channels
         self.num_classes = num_classes
@@ -29,24 +30,21 @@ class Unet(nn.Module):
                 pool = False
             else:
                 pool = True
-
-            # Bottom-most encoding layer is #filters-2, #filters-1 is the bottleneck!
-            if mc_dropout is True and i == len(self.num_filters) - 2:
-                self.contracting_path.append(DownConvBlock(input, output, initializers, padding, pool=pool, dropout=True, dropout_rate=dropout_rate))
-            else:
-                self.contracting_path.append(DownConvBlock(input, output, initializers, padding, pool=pool, dropout=False))
+#            if i == len(self.num_filters)-1:
+#                self.contracting_path.append(DownConvBlock(input, output, initializers, padding, pool=pool,norm=False))
+            self.contracting_path.append(DownConvBlock(input, output, initializers, padding, pool=pool,norm=norm))
 
 
         self.upsampling_path = nn.ModuleList()
 
         n = len(self.num_filters) - 2
+#        pdb.set_trace()
         for i in range(n, -1, -1):
             input = output + self.num_filters[i]
             output = self.num_filters[i]
-            if mc_dropout is True and i == n:
-                self.upsampling_path.append(UpConvBlock(input, output, initializers, padding, dropout=True, dropout_rate=dropout_rate))
-            else:
-                self.upsampling_path.append(UpConvBlock(input, output, initializers, padding, dropout=False))
+            if i == 0:
+                norm = False
+            self.upsampling_path.append(UpConvBlock(input, output, initializers, padding,norm=norm))
 
         if self.apply_last_layer:
             self.last_layer = nn.Conv2d(output, num_classes, kernel_size=1)
@@ -54,7 +52,7 @@ class Unet(nn.Module):
             #nn.init.normal_(self.last_layer.bias)
 
 
-    def forward(self, x, val=False):
+    def forward(self, x, val):
         blocks = []
         for i, down in enumerate(self.contracting_path):
             x = down(x)
@@ -74,12 +72,3 @@ class Unet(nn.Module):
             x =  self.last_layer(x)
 
         return x
-
-    def get_l2_params(self):
-        # Get conv weights for encoder/decoder where dropout is applied
-        encoder_weights = self.contracting_path[len(self.num_filters)-1].get_conv_params()
-        decoder_weights = self.upsampling_path[0].get_conv_params()
-
-        return encoder_weights+decoder_weights
-
-

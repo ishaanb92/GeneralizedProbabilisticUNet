@@ -13,7 +13,7 @@ class Encoder(nn.Module):
     A convolutional neural network, consisting of len(num_filters) times a block of no_convs_per_block convolutional layers,
     after each block a pooling operation is performed. And after each convolutional layer a non-linear (ReLU) activation function is applied.
     """
-    def __init__(self, input_channels, num_filters, no_convs_per_block, initializers, padding=True, posterior=False,norm=True):
+    def __init__(self, input_channels, num_filters, no_convs_per_block, initializers, padding=True, posterior=False,norm=True, label_channels=1):
         super(Encoder, self).__init__()
         self.contracting_path = nn.ModuleList()
         self.input_channels = input_channels
@@ -21,7 +21,7 @@ class Encoder(nn.Module):
 
         if posterior:
             #To accomodate for the mask that is concatenated at the channel axis, we increase the input_channels.
-            self.input_channels += 1
+            self.input_channels += label_channels
 
         layers = []
         for i in range(len(self.num_filters)):
@@ -74,7 +74,7 @@ class AxisAlignedConvGaussian(nn.Module):
             self.name = 'Prior'
 
 
-        self.encoder = Encoder(self.input_channels, self.num_filters, self.no_convs_per_block, initializers, posterior=self.posterior, norm=norm)
+        self.encoder = Encoder(self.input_channels, self.num_filters, self.no_convs_per_block, initializers, posterior=self.posterior, norm=norm, label_channels=label_channels)
 
         self.conv_layer = nn.Conv2d(num_filters[-1], 2 * self.n_components*self.latent_dim, (1,1), stride=1)
         nn.init.kaiming_normal_(self.conv_layer.weight, mode='fan_in', nonlinearity='relu')
@@ -161,7 +161,7 @@ class LowRankCovConvGaussian(nn.Module):
         else:
             self.name = 'Prior'
 
-        self.encoder = Encoder(self.input_channels, label_channels, self.num_filters, self.no_convs_per_block, initializers, posterior=self.posterior, norm=norm)
+        self.encoder = Encoder(self.input_channels, self.num_filters, self.no_convs_per_block, initializers, posterior=self.posterior, norm=norm, label_channels=label_channels)
 
 
         # Low-rank approximation via covariance factors
@@ -190,10 +190,7 @@ class LowRankCovConvGaussian(nn.Module):
             self.show_img = input
             self.show_seg = segm
 
-            if one_hot is True:
-                input = torch.cat((input, segm[:, :, 1, ...]), dim=1)
-            else:
-                input = torch.cat((input, segm), dim=1)
+            input = torch.cat((input, segm), dim=1)
 
             self.show_concat = input
             self.sum_input = torch.sum(input)

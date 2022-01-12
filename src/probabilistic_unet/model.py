@@ -454,6 +454,15 @@ class ProbabilisticUnet(nn.Module):
         #log_qz = self.posterior_latent_space.log_prob(z_prior)
         return self.fcomb.forward(self.unet_features,z_prior), log_pz
 
+    def get_latent_space_distribution(self, mode='prior'):
+
+        if mode == 'prior':
+            return self.prior_latent_space
+        elif mode == 'posterior':
+            return self.posterior_latent_space
+        else:
+            raise ValueError('{} is an invalid mode'.format(mode))
+
 
     def reconstruct(self, use_posterior_mean=False, calculate_posterior=False, z_posterior=None):
         """

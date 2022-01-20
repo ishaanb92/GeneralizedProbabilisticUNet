@@ -6,6 +6,9 @@ from .utils import init_weights,init_weights_orthogonal_normal, l2_regularisatio
 import torch.nn.functional as F
 from torch.distributions import Normal, Independent, kl, LowRankMultivariateNormal, RelaxedOneHotCategorical
 from .mog import MixtureOfGaussians
+from .nflib.flows import *
+from .flows import *
+from .layers import *
 
 
 class Encoder(nn.Module):
@@ -137,7 +140,7 @@ class AxisAlignedConvGaussian(nn.Module):
 
         assert(dist.batch_shape[0] == input.shape[0])
 
-        return dist
+        return encoding.squeeze(-1).squeeze(-1), dist
 
 class LowRankCovConvGaussian(nn.Module):
     """
@@ -236,7 +239,7 @@ class LowRankCovConvGaussian(nn.Module):
 
         assert(dist.batch_shape[0] == input.shape[0])
 
-        return dist
+        return encoding.squeeze(-1).squeeze(-1), dist
 
 class Fcomb(nn.Module):
     """
@@ -320,6 +323,124 @@ class Fcomb(nn.Module):
         return self.last_layer(output)
 
 
+class glowDensity(nn.Module):
+    """
+    A convolutional net that parametrizes a Gaussian distribution with axis aligned covariance matrix as
+    the base distribution for a sequence of flow based transformations.
+    """
+    def __init__(self, num_flows, input_channels, num_filters, no_convs_per_block,
+            latent_dim, initializers, posterior=False,norm=False, label_channels=1):
+        super(glowDensity, self).__init__()
+
+        self.base_density = AxisAlignedConvGaussian(input_channels, label_channels, num_filters,
+                no_convs_per_block, latent_dim, initializers, posterior=True,n_components=1, temperature=0.1, norm=norm)
+
+        # Initialize log-det-jacobian to zero
+        self.log_det_j = 0.
+        self.latent_dim = latent_dim
+        # Flow parameters
+        self.num_flows = num_flows
+        nF_oP = num_flows * latent_dim
+
+
+        # Normalizing flow layers
+        self.norms = [CondActNorm(dim=latent_dim) for _ in range(num_flows)]
+        self.InvConvs = [CondInvertible1x1Conv(dim=latent_dim) for i in range(num_flows)]
+        self.couplings = [CondAffineHalfFlow(dim=latent_dim,latent_dim=num_filters[-1],
+            parity=i%2, nh=4) for i in range(num_flows)]
+
+        # Amortized flow parameters
+        self.amor_W = nn.Sequential(nn.Linear(num_filters[-1], 4),nn.ReLU(),
+                nn.Linear(4, num_flows * latent_dim**2),)
+        self.amor_s = nn.Linear(num_filters[-1], nF_oP)
+        self.amor_t = nn.Linear(num_filters[-1], num_flows)
+
+    def forward(self, input, segm=None):
+
+        """
+        Forward pass with planar flows for the transformation z_0 -> z_1 -> ... -> z_k.
+        Log determinant is computed as log_det_j = N E_q_z0[\sum_k log |det dz_k/dz_k-1| ].
+        """
+        batch_size = input.shape[0]
+        self.ldj = torch.zeros(batch_size).to(input.device)
+        h, z0_density = self.base_density(input,segm)
+        z = [z0_density.rsample()]
+        W = (self.amor_W(h)).view(batch_size, self.num_flows, self.latent_dim,self.latent_dim)
+        s = (self.amor_s(h)).view(batch_size, self.num_flows, self.latent_dim)
+        t = self.amor_t(h).view(batch_size, self.num_flows, 1)
+
+        # Normalizing flows
+        for k in range(self.num_flows):
+            z_k, ldj = self.norms[k](z[k], s[:,k,:], t[:,k,:])
+            self.ldj += ldj
+            z_k, ldj = self.InvConvs[k](z_k, W[:,k,:,:])
+            self.ldj += ldj
+            z_k, ldj = self.couplings[k](z_k,h)
+            self.ldj += ldj
+            z.append(z_k)
+
+        return self.ldj, z[0], z[-1], z0_density
+
+
+class planarFlowDensity(nn.Module):
+    """
+    A convolutional net that parametrizes a Gaussian distribution with axis aligned covariance matrix as
+    the base distribution for a sequence of flow based transformations.
+    """
+    def __init__(self, num_flows, input_channels, num_filters, no_convs_per_block,
+            latent_dim, initializers, posterior=False,norm=False, label_channels=1):
+        super(planarFlowDensity, self).__init__()
+
+        self.base_density = AxisAlignedConvGaussian(input_channels, label_channels, num_filters,
+                no_convs_per_block, latent_dim, initializers, posterior=True,n_components=1, temperature=0.1, norm=norm)
+
+        # Initialize log-det-jacobian to zero
+        self.log_det_j = 0.
+        self.latent_dim = latent_dim
+        # Flow parameters
+        flow = Planar
+        self.num_flows = num_flows
+        nF_oP = num_flows * latent_dim
+        # Amortized flow parameters
+        self.amor_u = nn.Sequential(nn.Linear(num_filters[-1], nF_oP),nn.ReLU(),
+                nn.Linear(nF_oP, nF_oP),nn.BatchNorm1d(nF_oP))
+        self.amor_w = nn.Sequential(nn.Linear(num_filters[-1], nF_oP),nn.ReLU(),
+                nn.Linear(nF_oP, nF_oP),nn.BatchNorm1d(nF_oP))
+        self.amor_b = nn.Sequential(nn.Linear(num_filters[-1], num_flows), nn.ReLU(),
+            nn.Linear(num_flows, num_flows),nn.BatchNorm1d(num_flows))
+
+        # Normalizing flow layers
+        for k in range(num_flows):
+            flow_k = flow()
+            self.add_module('flow_' + str(k), flow_k)
+
+
+    def forward(self, input, segm=None):
+
+        """
+        Forward pass with planar flows for the transformation z_0 -> z_1 -> ... -> z_k.
+        Log determinant is computed as log_det_j = N E_q_z0[\sum_k log |det dz_k/dz_k-1| ].
+        """
+        batch_size = input.shape[0]
+        self.log_det_j = 0.
+        h, z0_density = self.base_density(input,segm)
+        z = [z0_density.rsample()]
+
+        # return amortized u an w for all flows
+        u = self.amor_u(h).view(batch_size, self.num_flows, self.latent_dim, 1)
+        w = self.amor_w(h).view(batch_size, self.num_flows, 1, self.latent_dim)
+        b = self.amor_b(h).view(batch_size, self.num_flows, 1, 1)
+
+        # Normalizing flows
+        for k in range(self.num_flows):
+            flow_k = getattr(self, 'flow_' + str(k))
+            z_k, log_det_jacobian = flow_k(z[k], u[:, k, :, :], w[:, k, :, :], b[:, k, :, :])
+            z.append(z_k)
+            self.log_det_j += log_det_jacobian
+
+        return self.log_det_j, z[0], z[-1], z0_density
+
+
 class ProbabilisticUnet(nn.Module):
     """
     A probabilistic UNet (https://arxiv.org/abs/1806.05034) implementation.
@@ -330,7 +451,7 @@ class ProbabilisticUnet(nn.Module):
     no_cons_per_block: no convs per block in the (convolutional) encoder of prior and posterior
     """
 
-    def __init__(self, input_channels=1, label_channels=1, num_classes=1, num_filters=[32,64,128,192], latent_dim=6, no_convs_fcomb=4, beta=1.0, mc_dropout=False, dropout_rate=0.0, low_rank=False, rank=-1, n_components=1, temperature=0.1, norm=True, flow=False):
+    def __init__(self, input_channels=1, label_channels=1, num_classes=1, num_filters=[32,64,128,192], latent_dim=6, no_convs_fcomb=4, beta=1.0, mc_dropout=False, dropout_rate=0.0, low_rank=False, rank=-1, n_components=1, temperature=0.1, norm=True, flow=False, glow=False, num_flows=4):
         super(ProbabilisticUnet, self).__init__()
         self.input_channels = input_channels
         self.num_classes = num_classes
@@ -347,6 +468,9 @@ class ProbabilisticUnet(nn.Module):
         self.temperature = temperature
         self.flow = flow
         self.norm = norm
+        self.glow = glow
+        self.flow_steps = num_flows
+
         if self.low_rank is True:
             if rank < 0: # Not initialized
                 raise ValueError('Low-rank set to True but rank not specified')
@@ -389,29 +513,40 @@ class ProbabilisticUnet(nn.Module):
                                                 norm=norm)
 
         # Posterior Net
-        if self.low_rank is False:
-            self.posterior = AxisAlignedConvGaussian(input_channels=self.input_channels,
-                                                     label_channels=label_channels,
-                                                     num_filters=self.num_filters,
-                                                     no_convs_per_block=self.no_convs_per_block,
-                                                     latent_dim=self.latent_dim,
-                                                     initializers=self.initializers,
-                                                     posterior=True,
-                                                     n_components=self.n_components,
-                                                     temperature=self.temperature,
-                                                     norm=norm)
+        if self.flow is False:
+            if self.low_rank is False:
+                self.posterior = AxisAlignedConvGaussian(input_channels=self.input_channels,
+                                                         label_channels=label_channels,
+                                                         num_filters=self.num_filters,
+                                                         no_convs_per_block=self.no_convs_per_block,
+                                                         latent_dim=self.latent_dim,
+                                                         initializers=self.initializers,
+                                                         posterior=True,
+                                                         n_components=self.n_components,
+                                                         temperature=self.temperature,
+                                                         norm=norm)
+            else:
+                self.posterior = LowRankCovConvGaussian(input_channels=self.input_channels,
+                                                        label_channels=label_channels,
+                                                        num_filters=self.num_filters,
+                                                        no_convs_per_block=self.no_convs_per_block,
+                                                        latent_dim=self.latent_dim,
+                                                        initializers=self.initializers,
+                                                        rank=self.rank,
+                                                        posterior=True,
+                                                        n_components=self.n_components,
+                                                        temperature=self.temperature,
+                                                        norm=norm)
         else:
-            self.posterior = LowRankCovConvGaussian(input_channels=self.input_channels,
-                                                    label_channels=label_channels,
-                                                    num_filters=self.num_filters,
-                                                    no_convs_per_block=self.no_convs_per_block,
-                                                    latent_dim=self.latent_dim,
-                                                    initializers=self.initializers,
-                                                    rank=self.rank,
-                                                    posterior=True,
-                                                    n_components=self.n_components,
-                                                    temperature=self.temperature,
-                                                    norm=norm)
+            print('Chossing a NF-based posterior')
+            if self.glow:
+                print('Choosing GLOW density')
+                self.posterior = glowDensity(self.flow_steps, self.input_channels, self.num_filters, self.no_convs_per_block,
+                    self.latent_dim, self.initializers,posterior=True,norm=norm, label_channels=label_channels)
+            else:
+                print('Choosing Planar flow')
+                self.posterior = planarFlowDensity(self.flow_steps, self.input_channels, self.num_filters, self.no_convs_per_block,
+                    self.latent_dim, self.initializers,posterior=True,norm=norm, label_channels=label_channels)
 
         # 1x1 convolutions to merge samples from the posterior into the decoder output
         self.fcomb = Fcomb(self.num_filters,
@@ -432,10 +567,10 @@ class ProbabilisticUnet(nn.Module):
             if self.flow:
                 self.log_det_j, self.z0, self.z, self.posterior_latent_space = self.posterior.forward(patch, segm)
             else:
-                self.posterior_latent_space = self.posterior.forward(patch,segm)
+                _, self.posterior_latent_space = self.posterior.forward(patch,segm)
                 self.z = self.posterior_latent_space.rsample()
                 self.z0 = self.z.clone()
-        self.prior_latent_space = self.prior.forward(patch)
+        _, self.prior_latent_space = self.prior.forward(patch)
         self.unet_features = self.unet.forward(patch,False)
 
     def sample(self, testing=False):

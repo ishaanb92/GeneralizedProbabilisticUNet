@@ -632,7 +632,7 @@ class ProbabilisticUnet(nn.Module):
 
         return kl_div
 
-    def elbo(self, segm, mask=None,use_mask = True, analytic_kl=True, reconstruct_posterior_mean=False):
+    def elbo(self, segm, mask=None,use_mask = True, analytic_kl=True, reconstruct_posterior_mean=False, pos_weight=None):
         """
         Calculate the evidence lower bound of the log-likelihood of P(Y|X)
         """
@@ -644,8 +644,13 @@ class ProbabilisticUnet(nn.Module):
                 calculate_posterior=False, z_posterior=self.z)
         if use_mask:
             self.reconstruction = self.reconstruction*mask
+        if pos_weight is None:
+            criterion = nn.BCEWithLogitsLoss(reduction='none')
+        else:
+            criterion = nn.BCEWithLogitsLoss(reduction='none',
+                                             pos_weight=pos_weight.to(segm.device))
 
-        criterion = nn.BCEWithLogitsLoss(reduction='none')
+
         reconstruction_loss = criterion(input=self.reconstruction, target=segm)
         self.reconstruction_loss = torch.sum(reconstruction_loss)
         self.mean_reconstruction_loss = torch.mean(reconstruction_loss)

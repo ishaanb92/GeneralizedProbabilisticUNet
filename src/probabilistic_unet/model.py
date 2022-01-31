@@ -451,7 +451,7 @@ class ProbabilisticUnet(nn.Module):
     no_cons_per_block: no convs per block in the (convolutional) encoder of prior and posterior
     """
 
-    def __init__(self, input_channels=1, label_channels=1, num_classes=1, num_filters=[32,64,128,192], latent_dim=6, no_convs_fcomb=4, beta=1.0, mc_dropout=False, dropout_rate=0.0, low_rank=False, rank=-1, n_components=1, temperature=0.1, norm=True, flow=False, glow=False, num_flows=4):
+    def __init__(self, input_channels=1, label_channels=1, num_classes=1, num_filters=[32,64,128,192], latent_dim=6, no_convs_fcomb=4, beta=1.0, gamma=1.0, mc_dropout=False, dropout_rate=0.0, low_rank=False, rank=-1, n_components=1, temperature=0.1, norm=True, flow=False, glow=False, num_flows=4):
         super(ProbabilisticUnet, self).__init__()
         self.input_channels = input_channels
         self.num_classes = num_classes
@@ -470,6 +470,7 @@ class ProbabilisticUnet(nn.Module):
         self.norm = norm
         self.glow = glow
         self.flow_steps = num_flows
+        self.gamma = gamma
 
         if self.low_rank is True:
             if rank < 0: # Not initialized
@@ -632,6 +633,20 @@ class ProbabilisticUnet(nn.Module):
 
         return kl_div
 
+    def compute_entropy(self, probs=None, reduction='sum'):
+        """
+        Compute entropy of mixture distribution
+
+        """
+        entropy = torch.multiply(probs, torch.log(probs+1e-5))
+        entropy = -1*torch.sum(entropy, dim=-1)
+        if reduction == 'none':
+            return entropy
+        elif reduction == 'sum':
+            return entropy.sum()
+        elif reduction == 'mean':
+            return entropy.mean()
+
     def elbo(self, segm, mask=None,use_mask = True, analytic_kl=True, reconstruct_posterior_mean=False, pos_weight=None):
         """
         Calculate the evidence lower bound of the log-likelihood of P(Y|X)
@@ -655,8 +670,18 @@ class ProbabilisticUnet(nn.Module):
         self.reconstruction_loss = torch.sum(reconstruction_loss)
         self.mean_reconstruction_loss = torch.mean(reconstruction_loss)
 
+        # Compute mixture distribution entropy
+        if self.n_components > 1:
+            prior_mixture = self.prior_latent_space.get_mixture_distribution()
+            posterior_mixture = self.posterior_latent_space.get_mixture_distribution()
+            prior_entropy = self.compute_entropy(probs=prior_mixture.probs, reduction='sum')
+            posterior_entropy = self.compute_entropy(probs=posterior_mixture.probs, reduction='sum')
+        else:
+            prior_entropy = 0.0
+            posterior_entropy = 0.0
+
         return self.reconstruction, self.reconstruction_loss/batch_size, self.kl/batch_size,\
-                -(self.reconstruction_loss + self.beta * self.kl)/batch_size
+            -(self.reconstruction_loss + self.beta * self.kl - self.gamma*prior_entropy - self.gamma*posterior_entropy)/batch_size
 
 
 #    def forward(self, patch, segm, training=True, one_hot=True, mc_samples=1000):

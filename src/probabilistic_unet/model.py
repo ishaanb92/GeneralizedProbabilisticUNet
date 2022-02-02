@@ -671,7 +671,7 @@ class ProbabilisticUnet(nn.Module):
         self.mean_reconstruction_loss = torch.mean(reconstruction_loss)
 
         # Compute mixture distribution entropy
-        if self.n_components > 1:
+        if self.n_components > 1 and self.gamma > 0:
             prior_mixture = self.prior_latent_space.get_mixture_distribution()
             posterior_mixture = self.posterior_latent_space.get_mixture_distribution()
             prior_entropy = self.compute_entropy(probs=prior_mixture.probs, reduction='sum')

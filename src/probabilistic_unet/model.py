@@ -759,7 +759,7 @@ class ProbabilisticUnet(nn.Module):
                 z_posterior = self.posterior_latent_space.rsample()
         return self.fcomb.forward(self.unet_features, z_posterior)
 
-    def kl_divergence(self, analytic=True, calculate_posterior=False, z_posterior=None):
+    def kl_divergence(self, analytic=True, calculate_posterior=False, z_posterior=None, mc_samples=1):
         """
         Calculate the KL divergence between the posterior and prior KL(Q||P)
         analytic: calculate KL analytically or via sampling from the posterior
@@ -770,9 +770,15 @@ class ProbabilisticUnet(nn.Module):
             kl_div = kl.kl_divergence(self.posterior_latent_space, self.prior_latent_space).sum()
 
         else:
-            log_posterior_prob = self.posterior_latent_space.log_prob(self.z)
-            log_prior_prob = self.prior_latent_space.log_prob(self.z)
-            kl_div = (log_posterior_prob - log_prior_prob).sum()
+            if mc_samples == 1:
+                log_posterior_prob = self.posterior_latent_space.log_prob(self.z)
+                log_prior_prob = self.prior_latent_space.log_prob(self.z)
+                kl_div = (log_posterior_prob - log_prior_prob).sum()
+            else:
+                z_samples = self.posterior_latent_space.rsample(sample_shape=torch.Size([mc_samples]))
+                log_posterior_prob = self.posterior_latent_space.log_prob(z_samples)
+                log_prior_prob = self.prior_latent_space.log_prob(z_samples)
+                kl_div = torch.mean((log_posterior_prob-log_prior_prob), dim=0).sum()
 
         if self.flow:
             kl_div = kl_div - self.log_det_j.sum()
@@ -793,12 +799,15 @@ class ProbabilisticUnet(nn.Module):
         elif reduction == 'mean':
             return entropy.mean()
 
-    def elbo(self, segm, mask=None,use_mask = True, analytic_kl=True, reconstruct_posterior_mean=False, pos_weight=None):
+    def elbo(self, segm, mask=None,use_mask = True, analytic_kl=True, reconstruct_posterior_mean=False, pos_weight=None, mc_samples=1):
         """
         Calculate the evidence lower bound of the log-likelihood of P(Y|X)
         """
         batch_size = segm.shape[0]
-        self.kl = (self.kl_divergence(analytic=analytic_kl, calculate_posterior=False))
+        self.kl = (self.kl_divergence(analytic=analytic_kl,
+                                      calculate_posterior=False,
+                                      z_posterior=None,
+                                      mc_samples=mc_samples))
 
         #Here we use the posterior sample sampled above
         self.reconstruction = self.reconstruct(use_posterior_mean=reconstruct_posterior_mean,

@@ -4,7 +4,7 @@ from .unet_blocks import *
 from .unet import Unet
 from .utils import init_weights,init_weights_orthogonal_normal, l2_regularisation
 import torch.nn.functional as F
-from torch.distributions import Normal, Independent, kl, LowRankMultivariateNormal, RelaxedOneHotCategorical
+from torch.distributions import Normal, Independent, kl, LowRankMultivariateNormal, RelaxedOneHotCategorical, MultivariateNormal
 from .mog import MixtureOfGaussians
 from .nflib.flows import *
 from .flows import *
@@ -141,6 +141,127 @@ class AxisAlignedConvGaussian(nn.Module):
         assert(dist.batch_shape[0] == input.shape[0])
 
         return encoding.squeeze(-1).squeeze(-1), dist
+
+
+class FullCovConvGaussian(nn.Module):
+    """
+    A convolutional net that parametrizes a Gaussian distribution with a full covariance matrix.
+    """
+
+    def __init__(self, input_channels, label_channels, num_filters, no_convs_per_block, latent_dim, initializers, posterior=False, n_components=1, temperature=0.1, norm=True):
+        super(FullCovConvGaussian, self).__init__()
+        self.input_channels = input_channels
+        self.channel_axis = 1
+        self.num_filters = num_filters
+        self.no_convs_per_block = no_convs_per_block
+        self.latent_dim = latent_dim
+        self.posterior = posterior
+        self.n_components = n_components
+        self.temperature = temperature
+
+        if self.posterior:
+            self.name = 'Posterior'
+        else:
+            self.name = 'Prior'
+
+        self.encoder = Encoder(self.input_channels, self.num_filters, self.no_convs_per_block, initializers, posterior=self.posterior, norm=norm, label_channels=label_channels)
+
+
+        # Obtain the following from encoder output: mu, log(sigma), L'
+        self.mean_log_sigma_op = nn.Conv2d(num_filters[-1], self.n_components*2*self.latent_dim, (1, 1), stride=1)
+
+        # Lower triangular part of the covariance matrix
+        self.cov_tril_op = nn.Conv2d(num_filters[-1], self.n_components*self.latent_dim*self.latent_dim, (1, 1), stride=1)
+
+        nn.init.kaiming_normal_(self.mean_log_sigma_op.weight, mode='fan_in', nonlinearity='relu')
+        nn.init.normal_(self.mean_log_sigma_op.bias)
+
+        nn.init.kaiming_normal_(self.cov_tril_op.weight, mode='fan_in', nonlinearity='relu')
+        nn.init.normal_(self.cov_tril_op.bias)
+
+        if self.n_components > 1:
+            self.mixture_weights_conv = nn.Conv2d(num_filters[-1], self.n_components, (1, 1), stride=1)
+
+        self.show_img = 0
+        self.show_seg = 0
+        self.show_concat = 0
+        self.show_enc = 0
+        self.sum_input = 0
+
+    def forward(self, input, segm=None, one_hot=True):
+
+        #If segmentation is not none, concatenate the mask to the channel axis of the input
+        if segm is not None:
+            self.show_img = input
+            self.show_seg = segm
+
+            input = torch.cat((input, segm), dim=1)
+
+            self.show_concat = input
+            self.sum_input = torch.sum(input)
+
+        encoding = self.encoder(input)
+        self.show_enc = encoding
+
+        # Mean over spatial dims
+        encoding = torch.mean(encoding,
+                              dim=(2, 3),
+                              keepdim=True)
+
+        mu_log_sigma = self.mean_log_sigma_op(encoding)
+        mu_log_sigma = mu_log_sigma.squeeze(dim=-1).squeeze(dim=-1)
+        mu_log_sigma = mu_log_sigma.view(mu_log_sigma.shape[0], self.n_components, 2*self.latent_dim)
+
+        cov_tril = self.cov_tril_op(encoding)
+        cov_tril = cov_tril.squeeze(dim=-1).squeeze(dim=-1)
+
+        # Shape: [B*n_components x latent_dim x latent_dim]
+        cov_tril = cov_tril.view(cov_tril.shape[0]*self.n_components, self.latent_dim, self.latent_dim)
+
+        # Get lower triangular part (without the diagonal)
+        L_hat = torch.tril(cov_tril, diagonal=-1)
+
+        mu = mu_log_sigma[:, :, :self.latent_dim]
+        log_sigma = mu_log_sigma[:, :, self.latent_dim:]
+
+        # Shape: [B*n_components x latent_dim]
+        log_sigma = log_sigma.view(mu_log_sigma.shape[0]*self.n_components, self.latent_dim)
+
+        # See Pg 29 of D. P. Kingma and M. Welling, An Introduction to Variational Autoencoders, FNT in Machine Learning, vol. 12, no. 4, pp. 307–392, 2019, doi: 10.1561/2200000056.
+        # See also: https://discuss.pytorch.org/t/operation-on-diagonals-of-matrix-batch/50779
+        L = L_hat.clone()
+        # Add the diagonal elements (sigma) to L
+        L.diagonal(dim1=-2, dim2=-1)[:] += torch.exp(log_sigma)
+
+        # Reshape L
+        L = L.view(mu_log_sigma.shape[0], self.n_components, self.latent_dim, self.latent_dim)
+
+        if self.n_components == 1:
+            L = L.squeeze(dim=1)
+            mu = mu.squeeze(dim=1)
+
+            dist = MultivariateNormal(loc=mu,
+                                      scale_tril=L)
+
+        else:
+            logits = self.mixture_weights_conv(encoding) # Shape : [batch_size, n_components, 1, 1]
+            logits = torch.squeeze(logits, dim=-1)
+            logits = torch.squeeze(logits, dim=-1)
+
+            cat_distribution = RelaxedOneHotCategorical(logits=logits,
+                                                        temperature=torch.Tensor([self.temperature]).to(logits.device))
+
+            comp_distribution = MultivariateNormal(loc=mu,
+                                                   scale_tril=L)
+            # Create a GMM
+            dist = MixtureOfGaussians(mixture_distribution=cat_distribution,
+                                      component_distribution=comp_distribution)
+
+
+        assert(dist.batch_shape[0] == input.shape[0])
+
+        return encoding.squeeze(-1).squeeze(-1), dist
+
 
 class LowRankCovConvGaussian(nn.Module):
     """
@@ -451,7 +572,7 @@ class ProbabilisticUnet(nn.Module):
     no_cons_per_block: no convs per block in the (convolutional) encoder of prior and posterior
     """
 
-    def __init__(self, input_channels=1, label_channels=1, num_classes=1, num_filters=[32,64,128,192], latent_dim=6, no_convs_fcomb=4, beta=1.0, gamma=1.0, mc_dropout=False, dropout_rate=0.0, low_rank=False, rank=-1, n_components=1, temperature=0.1, norm=True, flow=False, glow=False, num_flows=4):
+    def __init__(self, input_channels=1, label_channels=1, num_classes=1, num_filters=[32,64,128,192], latent_dim=6, no_convs_fcomb=4, beta=1.0, gamma=1.0, mc_dropout=False, dropout_rate=0.0, low_rank=False, full_cov=False, rank=-1, n_components=1, temperature=0.1, norm=True, flow=False, glow=False, num_flows=4):
         super(ProbabilisticUnet, self).__init__()
         self.input_channels = input_channels
         self.num_classes = num_classes
@@ -464,6 +585,7 @@ class ProbabilisticUnet(nn.Module):
         self.z_prior_sample = 0
         self.mc_dropout = mc_dropout
         self.low_rank = low_rank
+        self.full_cov = full_cov
         self.n_components = n_components
         self.temperature = temperature
         self.flow = flow
@@ -472,7 +594,9 @@ class ProbabilisticUnet(nn.Module):
         self.flow_steps = num_flows
         self.gamma = gamma
 
+
         if self.low_rank is True:
+            assert(self.full_cov is False)
             if rank < 0: # Not initialized
                 raise ValueError('Low-rank set to True but rank not specified')
             else:
@@ -489,18 +613,7 @@ class ProbabilisticUnet(nn.Module):
                          norm=norm)
 
         # Prior Net
-        if self.low_rank is False:
-            self.prior = AxisAlignedConvGaussian(input_channels=self.input_channels,
-                                                 label_channels=label_channels,
-                                                 num_filters=self.num_filters,
-                                                 no_convs_per_block=self.no_convs_per_block,
-                                                 latent_dim=self.latent_dim,
-                                                 initializers=self.initializers,
-                                                 posterior=False,
-                                                 n_components=self.n_components,
-                                                 temperature=self.temperature,
-                                                 norm=norm)
-        else:
+        if self.low_rank is True:
             self.prior = LowRankCovConvGaussian(input_channels=self.input_channels,
                                                 label_channels=label_channels,
                                                 num_filters=self.num_filters,
@@ -512,21 +625,32 @@ class ProbabilisticUnet(nn.Module):
                                                 n_components=self.n_components,
                                                 temperature=self.temperature,
                                                 norm=norm)
+        elif self.full_cov is True:
+            self.prior = FullCovConvGaussian(input_channels=self.input_channels,
+                                             label_channels=label_channels,
+                                             num_filters=self.num_filters,
+                                             no_convs_per_block=self.no_convs_per_block,
+                                             latent_dim=self.latent_dim,
+                                             initializers=self.initializers,
+                                             posterior=False,
+                                             n_components=self.n_components,
+                                             temperature=self.temperature,
+                                             norm=norm)
+        else:
+            self.prior = AxisAlignedConvGaussian(input_channels=self.input_channels,
+                                                 label_channels=label_channels,
+                                                 num_filters=self.num_filters,
+                                                 no_convs_per_block=self.no_convs_per_block,
+                                                 latent_dim=self.latent_dim,
+                                                 initializers=self.initializers,
+                                                 posterior=False,
+                                                 n_components=self.n_components,
+                                                 temperature=self.temperature,
+                                                 norm=norm)
 
         # Posterior Net
         if self.flow is False:
-            if self.low_rank is False:
-                self.posterior = AxisAlignedConvGaussian(input_channels=self.input_channels,
-                                                         label_channels=label_channels,
-                                                         num_filters=self.num_filters,
-                                                         no_convs_per_block=self.no_convs_per_block,
-                                                         latent_dim=self.latent_dim,
-                                                         initializers=self.initializers,
-                                                         posterior=True,
-                                                         n_components=self.n_components,
-                                                         temperature=self.temperature,
-                                                         norm=norm)
-            else:
+            if self.low_rank is True:
                 self.posterior = LowRankCovConvGaussian(input_channels=self.input_channels,
                                                         label_channels=label_channels,
                                                         num_filters=self.num_filters,
@@ -538,6 +662,28 @@ class ProbabilisticUnet(nn.Module):
                                                         n_components=self.n_components,
                                                         temperature=self.temperature,
                                                         norm=norm)
+            elif self.full_cov is True:
+                self.posterior = FullCovConvGaussian(input_channels=self.input_channels,
+                                                     label_channels=label_channels,
+                                                     num_filters=self.num_filters,
+                                                     no_convs_per_block=self.no_convs_per_block,
+                                                     latent_dim=self.latent_dim,
+                                                     initializers=self.initializers,
+                                                     posterior=True,
+                                                     n_components=self.n_components,
+                                                     temperature=self.temperature,
+                                                     norm=norm)
+            else:
+                self.posterior = AxisAlignedConvGaussian(input_channels=self.input_channels,
+                                                         label_channels=label_channels,
+                                                         num_filters=self.num_filters,
+                                                         no_convs_per_block=self.no_convs_per_block,
+                                                         latent_dim=self.latent_dim,
+                                                         initializers=self.initializers,
+                                                         posterior=True,
+                                                         n_components=self.n_components,
+                                                         temperature=self.temperature,
+                                                         norm=norm)
         else:
             print('Chossing a NF-based posterior')
             if self.glow:

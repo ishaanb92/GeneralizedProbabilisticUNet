@@ -718,7 +718,7 @@ class ProbabilisticUnet(nn.Module):
                 self.z = self.posterior_latent_space.rsample()
                 self.z0 = self.z.clone()
         _, self.prior_latent_space = self.prior.forward(patch)
-        self.unet_features = self.unet.forward(patch,False)
+        self.unet_features = self.unet.forward(patch)
 
     def sample(self, testing=False):
         """

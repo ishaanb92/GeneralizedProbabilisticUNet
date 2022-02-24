@@ -12,7 +12,7 @@ class Unet(nn.Module):
     padidng: Boolean, if true we pad the images with 1 so that we keep the same dimensions
     """
 
-    def __init__(self, input_channels, num_classes, num_filters, initializers, apply_last_layer=True, padding=True,norm=False):
+    def __init__(self, input_channels, num_classes, num_filters, initializers, apply_last_layer=True, padding=True,norm=False, mc_dropout=False, dropout_rate=0.0):
         super(Unet, self).__init__()
         self.input_channels = input_channels
         self.num_classes = num_classes
@@ -30,29 +30,43 @@ class Unet(nn.Module):
                 pool = False
             else:
                 pool = True
-#            if i == len(self.num_filters)-1:
-#                self.contracting_path.append(DownConvBlock(input, output, initializers, padding, pool=pool,norm=False))
-            self.contracting_path.append(DownConvBlock(input, output, initializers, padding, pool=pool,norm=norm))
+
+            self.contracting_path.append(DownConvBlock(input,
+                                                       output,
+                                                       initializers,
+                                                       padding,
+                                                       pool=pool,
+                                                       norm=norm,
+                                                       mc_dropout=mc_dropout,
+                                                       dropout_rate=dropout_rate))
 
 
         self.upsampling_path = nn.ModuleList()
 
         n = len(self.num_filters) - 2
-#        pdb.set_trace()
+
         for i in range(n, -1, -1):
             input = output + self.num_filters[i]
             output = self.num_filters[i]
+
             if i == 0:
                 norm = False
-            self.upsampling_path.append(UpConvBlock(input, output, initializers, padding,norm=norm))
+            else:
+                norm = norm
+
+            self.upsampling_path.append(UpConvBlock(input,
+                                                    output,
+                                                    initializers,
+                                                    padding,
+                                                    norm=norm,
+                                                    mc_dropout=mc_dropout,
+                                                    dropout_rate=dropout_rate))
 
         if self.apply_last_layer:
             self.last_layer = nn.Conv2d(output, num_classes, kernel_size=1)
-            #nn.init.kaiming_normal_(self.last_layer.weight, mode='fan_in',nonlinearity='relu')
-            #nn.init.normal_(self.last_layer.bias)
 
 
-    def forward(self, x, val):
+    def forward(self, x):
         blocks = []
         for i, down in enumerate(self.contracting_path):
             x = down(x)
@@ -63,10 +77,6 @@ class Unet(nn.Module):
             x = up(x, blocks[-i-1])
 
         del blocks
-
-        #Used for saving the activations and plotting
-        if val:
-            self.activation_maps.append(x)
 
         if self.apply_last_layer:
             x =  self.last_layer(x)

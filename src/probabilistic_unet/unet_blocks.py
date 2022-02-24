@@ -4,14 +4,17 @@ from torch.autograd import Variable
 import numpy as np
 from .utils import init_weights
 import pdb
+
 class DownConvBlock(nn.Module):
     """
     A block of three convolutional layers where each layer is followed by a non-linear activation function
     Between each block we add a pooling operation.
     """
-    def __init__(self, input_dim, output_dim, initializers, padding, pool=True,norm=False):
+    def __init__(self, input_dim, output_dim, initializers, padding, pool=True,norm=False, mc_dropout=False, dropout_rate=0.0):
         super(DownConvBlock, self).__init__()
         layers = []
+
+        self.mc_dropout = mc_dropout
 
         if pool:
             layers.append(nn.AvgPool2d(kernel_size=2, stride=2, padding=0, ceil_mode=True))
@@ -25,26 +28,35 @@ class DownConvBlock(nn.Module):
 
         if norm:
             layers.append(nn.BatchNorm2d(output_dim))
+
+        if self.mc_dropout is True:
+            self.dropout_op = nn.Dropout(p=dropout_rate)
+
         self.layers = nn.Sequential(*layers)
 
         self.layers.apply(init_weights)
 
     def forward(self, patch):
-        return self.layers(patch)
+        out = self.layers(patch)
+        if self.mc_dropout is True:
+            out = self.dropout_op(out)
+
+        return out
+
 
 class UpConvBlock(nn.Module):
     """
     A block consists of an upsampling layer followed by a convolutional layer to reduce the amount of channels and then a DownConvBlock
     If bilinear is set to false, we do a transposed convolution instead of upsampling
     """
-    def __init__(self, input_dim, output_dim, initializers, padding, bilinear=True,norm=False):
+    def __init__(self, input_dim, output_dim, initializers, padding, bilinear=True,norm=False, mc_dropout=False, dropout_rate=0.0):
         super(UpConvBlock, self).__init__()
         self.bilinear = bilinear
         if not self.bilinear:
             self.upconv_layer = nn.ConvTranspose2d(input_dim, output_dim, kernel_size=2, stride=2)
             self.upconv_layer.apply(init_weights)
 #        pdb.set_trace()
-        self.conv_block = DownConvBlock(input_dim, output_dim, initializers, padding, pool=False,norm=norm)
+        self.conv_block = DownConvBlock(input_dim, output_dim, initializers, padding, pool=False,norm=norm, mc_dropout=mc_dropout, dropout_rate=dropout_rate)
 
     def forward(self, x, bridge):
         if self.bilinear:

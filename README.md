@@ -1,23 +1,34 @@
-### Probabilistic U-Net with MC-Dropout
+### Generalized Probabilistic U-Net
 
-The code in this repository was developed for the [QUBIQ 2021 challenge](https://qubiq21.grand-challenge.org/). We extend the [Probabilistic U-Net](https://proceedings.neurips.cc/paper/2018/hash/473447ac58e1cd7e96172575f48dca3b-Abstract.html) to estimate model uncertainty (in addition to data uncertainty) using the popular [MC-Dropout](http://proceedings.mlr.press/v48/gal16.html) technique. This approach is inspired from [Hu et al., 2019](http://arxiv.org/abs/1907.01949) that uses
-[variational dropout](https://papers.nips.cc/paper/2015/file/bc7316929fe1545bf0b98d114ee3ecb8-Paper.pdf) within the Probabilistic U-Net framework to estimate the model uncertainty.
+We propose three extensions to the [Probabilistic U-Net](https://proceedings.neurips.cc/paper/2018/hash/473447ac58e1cd7e96172575f48dca3b-Abstract.html) by using more expressive forms of the Gaussian distribution as choices for the latent space distributions. In addition to the default choice for the latent space distribution (axis-aligned Gaussian), the Generalized Probabilistic U-Net supports the following:
+* Full-covariance Gaussian
+* Full-covariance Gaussian with a low-rank parameterization
+* Mixture of Gaussians
 
-The code for the Probabilistic U-Net has been forked from [here](https://github.com/stefanknegt/Probabilistic-Unet-Pytorch). We have restructured the code to enable import as an external module, in addition to changes to handle multi-channel images and uncertainty estimation using MC-Dropout. 
+During training, the model learns prior and posterior distribution parameters for the latent space distributions. In the most general case, the prior and posterior distributions are modelled as a mixture of N Gaussians. By setting N and restricting the covariance matrix to be diagonal, we recover the original Probabilistic U-Net. During inference, the posterior encoder is discarded and different plausible outputs can be computed by sampling from the prior distribution and combining this sample with the last U-Net layer.
 
-UPDATE: Supports low-rank approximation for prior and posterior covariance matrices to capture more expressive distributions. See [Monteiro et al. (2020)](https://arxiv.org/abs/2006.06015) for background on low-rank approximation of covariance matrices of multivariate Gaussian distributions.  
+![Image] (p_unet_block_diagram.pdf)
 
-### Usage:
+We compare the different choices for the latent space distributions with respect to the GED metric on the LIDC-IDRI dataset:
+![Image](ged_16_samples.pdf)
 
-Follow these steps to use this model in your project:
+ ### Usage:
+ Follow these steps to use this model in your project:
+ 
+ * Clone this repository into a local folder 
+ 
+ * Install the model in your python environment
+   `python setup.py install`
+ 
+ * Import the model into your script
+   `from probabilistic_unet.model import ProbabilisticUnet`
 
-* Clone this repository into a local folder
-  `git clone https://github.com/kilgore92/PyTorch_ProbUNet.git`
+The model is tested with Pytorch 1.7.0 and Python 3.7.3.
 
-* Install the model in your python environment
-  `python setup.py install`
+ If you have any questions, please open a pull-request or issue and I will get back to you
+ 
+### Acknowledgements
 
-* Import the model into your script
-  `from probabilistic_unet.model import ProbabilisticUnet`
-
-If you have any questions, please open a pull-request or issue and I will get back to you.
+Our implementation is based on:
+* [Probabilistic U-Net, LIDC data](https://github.com/stefanknegt/Probabilistic-Unet-Pytorch)
+* [Normalizing Flows (untested)](https://github.com/raghavian/cFlow)

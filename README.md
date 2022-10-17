@@ -7,11 +7,11 @@ We propose three extensions to the [Probabilistic U-Net](https://proceedings.neu
 
 During training, the model learns prior and posterior distribution parameters for the latent space distributions. In the most general case, the prior and posterior distributions are modelled as a mixture of N Gaussians. By setting N and restricting the covariance matrix to be diagonal, we recover the original Probabilistic U-Net. During inference, the posterior encoder is discarded and different plausible outputs can be computed by sampling from the prior distribution and combining this sample with the last U-Net layer.
 
-![Generalized Probabilistic U-Net](p_unet_block_diagram.pdf)
+![Generalized Probabilistic U-Net](p_unet_block_diagram.png)
 
 We compare the different choices for the latent space distributions with respect to the GED metric on the LIDC-IDRI dataset:
 
-![GED Trends for the LIDC-IDRI dataset](ged_16_samples.pdf)
+![GED Trends for the LIDC-IDRI dataset](ged_16_samples.png)
 
 Here's a [link](https://link.springer.com/chapter/10.1007/978-3-031-16749-2_11) to our paper.
 

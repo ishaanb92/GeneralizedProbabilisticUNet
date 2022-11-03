@@ -230,8 +230,8 @@ class FullCovConvGaussian(nn.Module):
         # See Pg 29 of D. P. Kingma and M. Welling, An Introduction to Variational Autoencoders, FNT in Machine Learning, vol. 12, no. 4, pp. 307–392, 2019, doi: 10.1561/2200000056.
         # See also: https://discuss.pytorch.org/t/operation-on-diagonals-of-matrix-batch/50779
         L = L_hat.clone()
-        # Add the diagonal elements (sigma) to L
-        L.diagonal(dim1=-2, dim2=-1)[:] += torch.exp(log_sigma)
+        # Add the diagonal elements (sigma) to L with noise for numerical stability
+        L.diagonal(dim1=-2, dim2=-1)[:] += (torch.exp(log_sigma) + 0.0001)
 
         # Reshape L
         L = L.view(mu_log_sigma.shape[0], self.n_components, self.latent_dim, self.latent_dim)
@@ -338,10 +338,12 @@ class LowRankCovConvGaussian(nn.Module):
         if self.n_components == 1:
             cov_factor = cov_factor.squeeze(dim=1)
             mu_log_sigma = mu_log_sigma.squeeze(dim=1)
-
+            # Add noise to ensure that the cov. matrix is non-singular
+            # See: https://juanitorduz.github.io/multivariate_normal/
             dist = LowRankMultivariateNormal(loc=mu_log_sigma[:, :self.latent_dim],
                                              cov_factor=cov_factor,
-                                             cov_diag=torch.exp(mu_log_sigma[:, self.latent_dim:]))
+                                             cov_diag=torch.add(torch.exp(mu_log_sigma[:, self.latent_dim:]),
+                                                                0.0001))
         else:
             logits = self.mixture_weights_conv(encoding) # Shape : [batch_size, n_components, 1, 1]
             logits = torch.squeeze(logits, dim=-1)
@@ -352,7 +354,8 @@ class LowRankCovConvGaussian(nn.Module):
 
             comp_distribution = LowRankMultivariateNormal(loc=mu_log_sigma[:, :, :self.latent_dim],
                                                           cov_factor=cov_factor,
-                                                          cov_diag=torch.exp(mu_log_sigma[:, :, self.latent_dim:]))
+                                                          cov_diag=torch.add(torch.exp(mu_log_sigma[:, :, self.latent_dim:]),
+                                                                             0.0001))
             # Create a GMM
             dist = MixtureOfGaussians(mixture_distribution=cat_distribution,
                                       component_distribution=comp_distribution)
@@ -594,6 +597,9 @@ class ProbabilisticUnet(nn.Module):
         self.flow_steps = num_flows
         self.gamma = gamma
 
+        # FIXME KL computation sometimes results in a NaN loss leading to training being suspended
+        # A potential WAR is switching from analytic KL to an MC-approximation
+        self.kl_nan = False
 
         if self.low_rank is True:
             assert(self.full_cov is False)
@@ -765,10 +771,16 @@ class ProbabilisticUnet(nn.Module):
         analytic: calculate KL analytically or via sampling from the posterior
         calculate_posterior: if we use samapling to approximate KL we can sample here or supply a sample
         """
-        if analytic:
+        if analytic is True and self.kl_nan is False:
             #Neeed to add this to torch source code, see: https://github.com/pytorch/pytorch/issues/13545
             kl_div = kl.kl_divergence(self.posterior_latent_space, self.prior_latent_space).sum()
-
+            if torch.isnan(torch.mean(kl_div)).item() is True or torch.isinf(torch.mean(kl_div)).item() is True: # Compute MC approx instead!
+                z_samples = self.posterior_latent_space.rsample(sample_shape=torch.Size([mc_samples]))
+                log_posterior_prob = self.posterior_latent_space.log_prob(z_samples)
+                log_prior_prob = self.prior_latent_space.log_prob(z_samples)
+                kl_div = torch.mean((log_posterior_prob-log_prior_prob), dim=0).sum()
+                # Set the flag
+                self.kl_nan = True
         else:
             if mc_samples == 1:
                 log_posterior_prob = self.posterior_latent_space.log_prob(self.z)

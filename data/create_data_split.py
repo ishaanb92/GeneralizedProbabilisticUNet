@@ -9,8 +9,8 @@ and save each set as a dictionary
 """
 
 SEED=1234
-DATA_DIR = '/data/ishaan/LIDC'
-TRAIN_FRAC = 0.8
+DATA_DIR = '/home/ishaan/paper2/LIDC'
+TRAIN_FRAC = 0.6
 
 import random
 import joblib
